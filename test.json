@@ -1,0 +1,573 @@
+{
+  "devices": [
+    {
+      "id": 1,
+      "name": "Магистральный кросс",
+      "type": "Main Cross-connect",
+      "category": "GLOBAL_INPUT",
+      "x": 200,
+      "y": 200,
+      "width": 160,
+      "height": 100,
+      "input_ports": [
+        {
+          "id": 0,
+          "name": "IN 1",
+          "type": "input",
+          "x": 120.0,
+          "y": 164.28571428571428
+        },
+        {
+          "id": 1,
+          "name": "IN 2",
+          "type": "input",
+          "x": 120.0,
+          "y": 178.57142857142858
+        },
+        {
+          "id": 2,
+          "name": "IN 3",
+          "type": "input",
+          "x": 120.0,
+          "y": 192.85714285714286
+        },
+        {
+          "id": 3,
+          "name": "IN 4",
+          "type": "input",
+          "x": 120.0,
+          "y": 207.14285714285714
+        },
+        {
+          "id": 4,
+          "name": "IN 5",
+          "type": "input",
+          "x": 120.0,
+          "y": 221.42857142857144
+        },
+        {
+          "id": 5,
+          "name": "IN 6",
+          "type": "input",
+          "x": 120.0,
+          "y": 235.71428571428572
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "name": "OUT 1",
+          "type": "output",
+          "x": 280.0,
+          "y": 183.33333333333334
+        },
+        {
+          "id": 1,
+          "name": "OUT 2",
+          "type": "output",
+          "x": 280.0,
+          "y": 216.66666666666669
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Локальный кросс",
+      "type": "Local Cross-connect",
+      "category": "LOCAL_INPUT",
+      "x": 241.28315705010607,
+      "y": 450.4909611902059,
+      "width": 160,
+      "height": 100,
+      "input_ports": [
+        {
+          "id": 0,
+          "name": "IN 1",
+          "type": "input",
+          "x": 161.28315705010607,
+          "y": 420.4909611902059
+        },
+        {
+          "id": 1,
+          "name": "IN 2",
+          "type": "input",
+          "x": 161.28315705010607,
+          "y": 440.4909611902059
+        },
+        {
+          "id": 2,
+          "name": "IN 3",
+          "type": "input",
+          "x": 161.28315705010607,
+          "y": 460.4909611902059
+        },
+        {
+          "id": 3,
+          "name": "IN 4",
+          "type": "input",
+          "x": 161.28315705010607,
+          "y": 480.4909611902059
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "name": "OUT 1",
+          "type": "output",
+          "x": 321.28315705010607,
+          "y": 420.4909611902059
+        },
+        {
+          "id": 1,
+          "name": "OUT 2",
+          "type": "output",
+          "x": 321.28315705010607,
+          "y": 440.4909611902059
+        },
+        {
+          "id": 2,
+          "name": "OUT 3",
+          "type": "output",
+          "x": 321.28315705010607,
+          "y": 460.4909611902059
+        },
+        {
+          "id": 3,
+          "name": "OUT 4",
+          "type": "output",
+          "x": 321.28315705010607,
+          "y": 480.4909611902059
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Агрегатор 1",
+      "type": "Aggregator",
+      "category": "SWITCHES",
+      "x": 600,
+      "y": 200,
+      "width": 160,
+      "height": 100,
+      "input_ports": [
+        {
+          "id": 0,
+          "name": "IN 1",
+          "type": "input",
+          "x": 520.0,
+          "y": 161.11111111111111
+        },
+        {
+          "id": 1,
+          "name": "IN 2",
+          "type": "input",
+          "x": 520.0,
+          "y": 172.22222222222223
+        },
+        {
+          "id": 2,
+          "name": "IN 3",
+          "type": "input",
+          "x": 520.0,
+          "y": 183.33333333333331
+        },
+        {
+          "id": 3,
+          "name": "IN 4",
+          "type": "input",
+          "x": 520.0,
+          "y": 194.44444444444446
+        },
+        {
+          "id": 4,
+          "name": "IN 5",
+          "type": "input",
+          "x": 520.0,
+          "y": 205.55555555555554
+        },
+        {
+          "id": 5,
+          "name": "IN 6",
+          "type": "input",
+          "x": 520.0,
+          "y": 216.66666666666666
+        },
+        {
+          "id": 6,
+          "name": "IN 7",
+          "type": "input",
+          "x": 520.0,
+          "y": 227.77777777777777
+        },
+        {
+          "id": 7,
+          "name": "IN 8",
+          "type": "input",
+          "x": 520.0,
+          "y": 238.88888888888889
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "name": "OUT 1",
+          "type": "output",
+          "x": 680.0,
+          "y": 161.11111111111111
+        },
+        {
+          "id": 1,
+          "name": "OUT 2",
+          "type": "output",
+          "x": 680.0,
+          "y": 172.22222222222223
+        },
+        {
+          "id": 2,
+          "name": "OUT 3",
+          "type": "output",
+          "x": 680.0,
+          "y": 183.33333333333331
+        },
+        {
+          "id": 3,
+          "name": "OUT 4",
+          "type": "output",
+          "x": 680.0,
+          "y": 194.44444444444446
+        },
+        {
+          "id": 4,
+          "name": "OUT 5",
+          "type": "output",
+          "x": 680.0,
+          "y": 205.55555555555554
+        },
+        {
+          "id": 5,
+          "name": "OUT 6",
+          "type": "output",
+          "x": 680.0,
+          "y": 216.66666666666666
+        },
+        {
+          "id": 6,
+          "name": "OUT 7",
+          "type": "output",
+          "x": 680.0,
+          "y": 227.77777777777777
+        },
+        {
+          "id": 7,
+          "name": "OUT 8",
+          "type": "output",
+          "x": 680.0,
+          "y": 238.88888888888889
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Коммутатор 1",
+      "type": "Switch",
+      "category": "SWITCHES",
+      "x": 600,
+      "y": 500,
+      "width": 160,
+      "height": 100,
+      "input_ports": [
+        {
+          "id": 0,
+          "name": "IN 1",
+          "type": "input",
+          "x": 520.0,
+          "y": 461.1111111111111
+        },
+        {
+          "id": 1,
+          "name": "IN 2",
+          "type": "input",
+          "x": 520.0,
+          "y": 472.22222222222223
+        },
+        {
+          "id": 2,
+          "name": "IN 3",
+          "type": "input",
+          "x": 520.0,
+          "y": 483.3333333333333
+        },
+        {
+          "id": 3,
+          "name": "IN 4",
+          "type": "input",
+          "x": 520.0,
+          "y": 494.44444444444446
+        },
+        {
+          "id": 4,
+          "name": "IN 5",
+          "type": "input",
+          "x": 520.0,
+          "y": 505.55555555555554
+        },
+        {
+          "id": 5,
+          "name": "IN 6",
+          "type": "input",
+          "x": 520.0,
+          "y": 516.6666666666666
+        },
+        {
+          "id": 6,
+          "name": "IN 7",
+          "type": "input",
+          "x": 520.0,
+          "y": 527.7777777777778
+        },
+        {
+          "id": 7,
+          "name": "IN 8",
+          "type": "input",
+          "x": 520.0,
+          "y": 538.8888888888889
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "name": "OUT 1",
+          "type": "output",
+          "x": 680.0,
+          "y": 461.1111111111111
+        },
+        {
+          "id": 1,
+          "name": "OUT 2",
+          "type": "output",
+          "x": 680.0,
+          "y": 472.22222222222223
+        },
+        {
+          "id": 2,
+          "name": "OUT 3",
+          "type": "output",
+          "x": 680.0,
+          "y": 483.3333333333333
+        },
+        {
+          "id": 3,
+          "name": "OUT 4",
+          "type": "output",
+          "x": 680.0,
+          "y": 494.44444444444446
+        },
+        {
+          "id": 4,
+          "name": "OUT 5",
+          "type": "output",
+          "x": 680.0,
+          "y": 505.55555555555554
+        },
+        {
+          "id": 5,
+          "name": "OUT 6",
+          "type": "output",
+          "x": 680.0,
+          "y": 516.6666666666666
+        },
+        {
+          "id": 6,
+          "name": "OUT 7",
+          "type": "output",
+          "x": 680.0,
+          "y": 527.7777777777778
+        },
+        {
+          "id": 7,
+          "name": "OUT 8",
+          "type": "output",
+          "x": 680.0,
+          "y": 538.8888888888889
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Сервер приложений",
+      "type": "Application Server",
+      "category": "SERVERS",
+      "x": 1000,
+      "y": 150,
+      "width": 160,
+      "height": 100,
+      "input_ports": [
+        {
+          "id": 0,
+          "name": "IN 1",
+          "type": "input",
+          "x": 920.0,
+          "y": 133.33333333333334
+        },
+        {
+          "id": 1,
+          "name": "IN 2",
+          "type": "input",
+          "x": 920.0,
+          "y": 166.66666666666669
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "name": "OUT 1",
+          "type": "output",
+          "x": 1080.0,
+          "y": 150
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Сервер БД",
+      "type": "Database Server",
+      "category": "SERVERS",
+      "x": 1000,
+      "y": 350,
+      "width": 160,
+      "height": 100,
+      "input_ports": [
+        {
+          "id": 0,
+          "name": "IN 1",
+          "type": "input",
+          "x": 920.0,
+          "y": 333.3333333333333
+        },
+        {
+          "id": 1,
+          "name": "IN 2",
+          "type": "input",
+          "x": 920.0,
+          "y": 366.6666666666667
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "name": "OUT 1",
+          "type": "output",
+          "x": 1080.0,
+          "y": 350
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "dev1_id": 1,
+      "port1_id": 0,
+      "dev2_id": 2,
+      "port2_id": 0,
+      "cable_type": "Fiber Optic",
+      "length": 50.0,
+      "group_id": 1
+    },
+    {
+      "dev1_id": 2,
+      "port1_id": 0,
+      "dev2_id": 3,
+      "port2_id": 0,
+      "cable_type": "Ethernet",
+      "length": 5.0,
+      "group_id": 1
+    },
+    {
+      "dev1_id": 3,
+      "port1_id": 0,
+      "dev2_id": 5,
+      "port2_id": 0,
+      "cable_type": "Ethernet",
+      "length": 2.0,
+      "group_id": 1
+    },
+    {
+      "dev1_id": 1,
+      "port1_id": 1,
+      "dev2_id": 2,
+      "port2_id": 1,
+      "cable_type": "Fiber Optic",
+      "length": 50.0,
+      "group_id": 2
+    },
+    {
+      "dev1_id": 2,
+      "port1_id": 1,
+      "dev2_id": 4,
+      "port2_id": 0,
+      "cable_type": "Ethernet",
+      "length": 5.0,
+      "group_id": 2
+    },
+    {
+      "dev1_id": 4,
+      "port1_id": 0,
+      "dev2_id": 6,
+      "port2_id": 0,
+      "cable_type": "Ethernet",
+      "length": 2.0,
+      "group_id": 2
+    },
+    {
+      "dev1_id": 3,
+      "port1_id": 1,
+      "dev2_id": 4,
+      "port2_id": 1,
+      "cable_type": "Fiber Optic",
+      "length": 3.0,
+      "group_id": 3
+    },
+    {
+      "dev1_id": 2,
+      "port1_id": 2,
+      "dev2_id": 4,
+      "port2_id": 5,
+      "cable_type": "Ethernet",
+      "length": 1.0,
+      "group_id": 4
+    }
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "name": "Магистраль - Сервер приложений",
+      "color": "#64ff64",
+      "visible": true
+    },
+    {
+      "id": 2,
+      "name": "Магистраль - Сервер БД",
+      "color": "#6464ff",
+      "visible": true
+    },
+    {
+      "id": 3,
+      "name": "Резервный канал",
+      "color": "#ffff64",
+      "visible": true
+    },
+    {
+      "id": 4,
+      "name": "ммчсмч",
+      "color": "#ff64ff",
+      "visible": true
+    }
+  ],
+  "next_device_id": 7,
+  "next_group_id": 5,
+  "settings": {
+    "show_grid": true,
+    "show_port_labels": true,
+    "show_connection_labels": true
+  }
+}
