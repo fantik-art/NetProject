@@ -7,11 +7,11 @@ import struct
 
 class TcpClient(QObject):
     """TCP клиент для связи с сервером"""
-    
-    connected = pyqtSignal()
-    disconnected = pyqtSignal()
-    message_received = pyqtSignal(Message)
-    connection_error = pyqtSignal(str)
+
+    connected = pyqtSignal()  # "Подключился к серверу!"
+    disconnected = pyqtSignal()  # "Отключился от сервера!"
+    message_received = pyqtSignal(Message)  # "Получил сообщение!"
+    connection_error = pyqtSignal(str)  # "Ошибка соединения: ..."
     
     def __init__(self):
         super().__init__()
