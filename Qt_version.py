@@ -282,8 +282,10 @@ class NetworkModel(QObject):
         """
         Создаёт соединение между двумя портами.
 
-        Соединение возможно только между выходным и входным портом.
-        Направление автоматически корректируется.
+        Перед созданием выполняется проверка:
+          - направление (выход → вход)
+          - оба порта свободны
+          - порты разных устройств
 
         Args:
             port1, port2: Порты для соединения
@@ -294,19 +296,22 @@ class NetworkModel(QObject):
         Returns:
             Созданное соединение или None в случае ошибки.
         """
+        # ✅ Проверка возможности соединения
+        can, error = self.can_connect(port1, port2)
+        if not can:
+            return None
+
         # Проверка на дубликат
         for conn in self.connections:
-            if (conn.port1 == port1 and conn.port2 == port2) or \
-                    (conn.port1 == port2 and conn.port2 == port1):
+            if (conn.port1 is port1 and conn.port2 is port2) or \
+                    (conn.port1 is port2 and conn.port2 is port1):
                 return None
 
-        # Нормализация направления (выход → вход)
-        if port1.port_type == PortType.OUTPUT and port2.port_type == PortType.INPUT:
+        # Нормализация направления
+        if port1.port_type == PortType.OUTPUT:
             conn = Connection(port1, port2, cable_type, length, group_id)
-        elif port2.port_type == PortType.OUTPUT and port1.port_type == PortType.INPUT:
-            conn = Connection(port2, port1, cable_type, length, group_id)
         else:
-            return None
+            conn = Connection(port2, port1, cable_type, length, group_id)
 
         self.connections.append(conn)
         self.notify_observers()
@@ -356,6 +361,85 @@ class NetworkModel(QObject):
             if port in device.ports:
                 return device
         return None
+
+    def is_port_connected(self, port: Port) -> bool:
+        """
+        Проверяет, используется ли порт в каком-либо соединении.
+
+        Args:
+            port: Порт для проверки.
+
+        Returns:
+            True если порт уже занят (есть соединение).
+        """
+        return any(
+            port is c.port1 or port is c.port2
+            for c in self.connections
+        )
+
+    def get_port_connection(self, port: Port) -> Optional[Connection]:
+        """
+        Возвращает соединение, в котором используется порт.
+
+        Args:
+            port: Порт для поиска.
+
+        Returns:
+            Соединение или None если порт свободен.
+        """
+        for c in self.connections:
+            if port is c.port1 or port is c.port2:
+                return c
+        return None
+
+    def can_connect(self, port1: Port, port2: Port) -> Tuple[bool, str]:
+        """
+        Проверяет возможность создания соединения между портами.
+
+        Правила:
+          1. Порты должны быть разного типа (выход → вход)
+          2. Оба порта должны быть свободны
+          3. Порты не должны принадлежать одному устройству
+
+        Args:
+            port1, port2: Порты для проверки.
+
+        Returns:
+            Кортеж (можно_ли, сообщение_об_ошибке).
+        """
+        # Проверка направления
+        if port1.port_type == port2.port_type:
+            return False, "Соединение возможно только между выходным и входным портом!"
+
+        # Определяем, кто из них выход, кто вход
+        out_port = port1 if port1.port_type == PortType.OUTPUT else port2
+        in_port = port2 if port1.port_type == PortType.OUTPUT else port1
+
+        # Проверка занятости выходного порта
+        if self.is_port_connected(out_port):
+            dev = self.find_device_by_port(out_port)
+            dev_name = dev.name if dev else "?"
+            return False, (
+                f"Выходной порт «{out_port.name}» устройства «{dev_name}» "
+                f"уже занят! Освободите порт перед созданием нового соединения."
+            )
+
+        # Проверка занятости входного порта
+        if self.is_port_connected(in_port):
+            dev = self.find_device_by_port(in_port)
+            dev_name = dev.name if dev else "?"
+            return False, (
+                f"Входной порт «{in_port.name}» устройства «{dev_name}» "
+                f"уже занят! Освободите порт перед созданием нового соединения."
+            )
+
+        # Проверка — не одно ли устройство
+        dev1 = self.find_device_by_port(out_port)
+        dev2 = self.find_device_by_port(in_port)
+        if dev1 and dev2 and dev1.id == dev2.id:
+            return False, "Нельзя соединить порты одного и того же устройства!"
+
+        return True, ""
 
     def get_visible_connections(self) -> List[Connection]:
         """
@@ -847,23 +931,53 @@ class NetworkCanvas(QWidget):
         for port in device.output_ports:
             self._draw_port(painter, port, is_input=False)
 
+        # ✅ Индикатор свободных портов (опционально)
+        free_in = sum(1 for p in device.input_ports
+                      if not self.model.is_port_connected(p))
+        free_out = sum(1 for p in device.output_ports
+                       if not self.model.is_port_connected(p))
+
+        if free_in == 0 and free_out == 0:
+            # Устройство полностью занято — маленькая метка
+            painter.setPen(QColor("#dc2626"))
+            font = QFont("Arial")
+            font.setPointSizeF(6)
+            painter.setFont(font)
+            painter.drawText(
+                QRectF(device.x - 20, device.y + device.height / 2 - 30, 40, 12),
+                Qt.AlignmentFlag.AlignCenter, "FULL"
+            )
+
     def _draw_port(self, painter: QPainter, port: Port, is_input: bool):
-        """Рисует порт."""
+        """
+        Рисует порт.
+
+        Цветовая схема:
+          - Зелёный ▼ — занятый входной порт
+          - Оранжевый ■ — занятый выходной порт
+          - Светло-серый — свободный порт
+          - Красный контур — выбранный порт
+        """
         size = 5.0
+        is_connected = self.model.is_port_connected(port)
 
-        is_connected = any(
-            port in (c.port1, c.port2) for c in self.model.connections
-        )
-
+        # ✅ Более контрастные цвета
         if is_connected:
-            color = "#00c800" if is_input else "#c89600"
+            if is_input:
+                color = "#10b981"  # изумрудный — вход занят
+                outline_color = "#047857"
+            else:
+                color = "#f59e0b"  # янтарный — выход занят
+                outline_color = "#b45309"
         else:
-            color = "#c8c8c8"
+            color = "#e5e7eb"  # светло-серый — свободен
+            outline_color = "#9ca3af"
 
+        # Красный контур для выбранного порта
         if port == self.selected_port:
-            pen = QPen(QColor("red"), 2)
+            pen = QPen(QColor("#dc2626"), 2)
         else:
-            pen = QPen(QColor("black"), 1)
+            pen = QPen(QColor(outline_color), 1)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.setBrush(QBrush(QColor(color)))
@@ -880,8 +994,9 @@ class NetworkCanvas(QWidget):
                 port.x - size, port.y - size, size * 2, size * 2
             ))
 
+        # Подпись порта
         if self.model.show_port_labels:
-            painter.setPen(QColor("black"))
+            painter.setPen(QColor("#4b5563"))
             font = QFont("Arial")
             font.setPointSizeF(5.5)
             painter.setFont(font)
@@ -947,13 +1062,12 @@ class NetworkCanvas(QWidget):
 
     def mousePressEvent(self, event):
         """Обработка нажатия кнопки мыши."""
-        # ✅ Устанавливаем фокус, чтобы получать события клавиатуры
         self.setFocus()
 
         pos = event.position()
         sx, sy = self.to_scene(pos.x(), pos.y())
 
-        # Панорамирование: средняя кнопка или Ctrl+ЛКМ
+        # Панорамирование
         if (event.button() == Qt.MouseButton.MiddleButton or
                 (event.button() == Qt.MouseButton.LeftButton and
                  event.modifiers() == Qt.KeyboardModifier.ControlModifier)):
@@ -964,33 +1078,54 @@ class NetworkCanvas(QWidget):
             event.accept()
             return
 
-        # ПКМ — начать соединение или контекстное меню
+        # ПКМ — начать соединение (только с СВОБОДНОГО выходного порта)
         if event.button() == Qt.MouseButton.RightButton:
             port = self._find_port_at(pos.x(), pos.y())
             if port:
+                # ✅ Проверяем, свободен ли порт
+                if self.model.is_port_connected(port):
+                    dev = self.model.find_device_by_port(port)
+                    dev_name = dev.name if dev else "?"
+                    QMessageBox.warning(
+                        self, "Порт занят",
+                        f"Порт «{port.name}» устройства «{dev_name}» уже используется.\n\n"
+                        f"Удалите существующее соединение, чтобы освободить порт."
+                    )
+                    event.accept()
+                    return
+
+                # Проверяем, что это выходной порт (иначе подсказка)
+                if port.port_type != PortType.OUTPUT:
+                    QMessageBox.information(
+                        self, "Неверный порт",
+                        f"Порт «{port.name}» — входной.\n"
+                        f"Соединение начинается с ВЫХОДНОГО порта (■)."
+                    )
+                    event.accept()
+                    return
+
+                # Всё хорошо — начинаем соединение
                 self.connection_mode = True
                 self.selected_port = port
+                self.setCursor(Qt.CursorShape.CrossCursor)
                 self.update()
             else:
                 self._show_context_menu(event)
             event.accept()
             return
 
-        # ЛКМ — выбор / соединение / перетаскивание
+        # ЛКМ — завершить соединение или выбрать
         if event.button() == Qt.MouseButton.LeftButton:
-            # Завершаем соединение
             if self.connection_mode:
                 port = self._find_port_at(pos.x(), pos.y())
                 if port:
                     self._finish_connection(port)
                 else:
-                    self.connection_mode = False
-                    self.selected_port = None
-                self.update()
+                    self._cancel_connection()
                 event.accept()
                 return
 
-            # Выбираем порт
+            # Выбор порта / устройства
             port = self._find_port_at(pos.x(), pos.y())
             if port:
                 self.selected_port = port
@@ -999,7 +1134,6 @@ class NetworkCanvas(QWidget):
                 event.accept()
                 return
 
-            # Выбираем устройство и начинаем перетаскивание
             device = self._find_device_at(pos.x(), pos.y())
             if device:
                 self.selected_device = device
@@ -1011,14 +1145,12 @@ class NetworkCanvas(QWidget):
                 event.accept()
                 return
 
-            # Клик по пустому месту
             self.selected_device = None
             self.selected_port = None
             self.update()
             event.accept()
             return
 
-        # Для остальных кнопок передаём событие дальше
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -1189,21 +1321,36 @@ class NetworkCanvas(QWidget):
     # ========================================================
 
     def _finish_connection(self, target_port: Port):
-        """Завершает создание соединения."""
-        if self.selected_port and self.selected_port != target_port:
-            s_out = self.selected_port.port_type == PortType.OUTPUT
-            t_in = target_port.port_type == PortType.INPUT
+        """
+        Завершает создание соединения с проверкой занятости портов.
 
-            if s_out and t_in:
-                self.connection_requested.emit(self.selected_port, target_port)
-            else:
-                QMessageBox.warning(
-                    self, "Ошибка",
-                    "Соединение возможно только от выходного порта к входному!"
-                )
+        Проверяет:
+          - корректность направления (выход → вход)
+          - что оба порта свободны
+          - что порты принадлежат разным устройствам
+        """
+        if not self.selected_port or self.selected_port == target_port:
+            self._cancel_connection()
+            return
 
+        # ✅ Полная проверка через модель
+        can, error = self.model.can_connect(self.selected_port, target_port)
+
+        if not can:
+            # Показываем ошибку с пояснением
+            QMessageBox.warning(self, "Невозможно создать соединение", error)
+            self._cancel_connection()
+            return
+
+        # Всё хорошо — запрашиваем параметры соединения
+        self.connection_requested.emit(self.selected_port, target_port)
+        self._cancel_connection()
+
+    def _cancel_connection(self):
+        """Сбрасывает режим создания соединения."""
         self.connection_mode = False
         self.selected_port = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
 
 
@@ -1404,16 +1551,22 @@ class DeviceEditDialog(QDialog):
 class ConnectionDialog(QDialog):
     """Диалог создания соединения между портами."""
 
-    def __init__(self, model: NetworkModel, port1: Port, port2: Port,
-                 parent=None):
+    def __init__(self, model: NetworkModel, port1: Port, port2: Port, parent=None):
         super().__init__(parent)
+
+        # ✅ Проверка ещё раз (защита от race condition)
+        can, error = model.can_connect(port1, port2)
+        if not can:
+            QMessageBox.warning(parent, "Невозможно создать соединение", error)
+            self.reject()
+            return
+
         self.model = model
         self.port1 = port1
         self.port2 = port2
 
         self.setWindowTitle("Создание соединения")
         self.resize(400, 400)
-
         self._setup_ui()
 
     def _setup_ui(self):
@@ -1498,92 +1651,196 @@ class ConnectionDialog(QDialog):
 
 
 class ChannelCreationDialog(QDialog):
-    """Диалог создания канала (цепочки устройств)."""
+    """
+    Диалог создания канала связи с настройкой каждого сегмента.
+
+    Позволяет:
+      - Задать название канала
+      - Построить маршрут из устройств
+      - Для каждого сегмента выбрать конкретные порты,
+        тип кабеля и длину
+    """
 
     def __init__(self, model: NetworkModel, parent=None):
         super().__init__(parent)
         self.model = model
         self.route_devices: List[Device] = []
+        self.segment_widgets: List[ChannelSegmentWidget] = []
 
         self.setWindowTitle("Создание канала связи")
-        self.resize(600, 550)
+        self.resize(750, 700)
+        self.setMinimumSize(650, 550)
 
         self._setup_ui()
 
     def _setup_ui(self):
         """Создаёт интерфейс диалога."""
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
 
-        # Название канала
-        form = QFormLayout()
+        # ===== Название канала =====
+        name_group = QGroupBox("Название канала")
+        name_layout = QVBoxLayout(name_group)
+
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Например: Москва - Санкт-Петербург")
-        form.addRow("Название канала:", self.name_edit)
-        layout.addLayout(form)
+        self.name_edit.setPlaceholderText(
+            "Например: Москва — Санкт-Петербург (магистраль)"
+        )
+        name_layout.addWidget(self.name_edit)
+        layout.addWidget(name_group)
 
-        # Список маршрута
+        # ===== Построение маршрута =====
         route_group = QGroupBox("Маршрут канала")
         route_layout = QVBoxLayout(route_group)
 
+        # Верхняя часть — список устройств и кнопки
+        top_row = QHBoxLayout()
+
+        # Список устройств маршрута
+        devices_widget = QWidget()
+        devices_layout = QVBoxLayout(devices_widget)
+        devices_layout.setContentsMargins(0, 0, 0, 0)
+
+        devices_layout.addWidget(QLabel("Устройства маршрута (в порядке следования):"))
+
         self.route_list = QListWidget()
-        route_layout.addWidget(self.route_list)
+        self.route_list.setMaximumHeight(140)
+        devices_layout.addWidget(self.route_list)
+
+        top_row.addWidget(devices_widget, 1)
 
         # Кнопки управления маршрутом
-        btn_row = QHBoxLayout()
+        btns_widget = QWidget()
+        btns_layout = QVBoxLayout(btns_widget)
+        btns_layout.setContentsMargins(0, 20, 0, 0)
 
-        add_btn = QPushButton("➕ Добавить устройство")
+        add_btn = QPushButton("➕ Добавить")
         add_btn.clicked.connect(self._add_device)
-        btn_row.addWidget(add_btn)
+        btns_layout.addWidget(add_btn)
 
         remove_btn = QPushButton("➖ Удалить")
         remove_btn.clicked.connect(self._remove_device)
-        btn_row.addWidget(remove_btn)
+        btns_layout.addWidget(remove_btn)
 
-        route_layout.addLayout(btn_row)
+        up_btn = QPushButton("⬆ Вверх")
+        up_btn.clicked.connect(lambda: self._move_device(-1))
+        btns_layout.addWidget(up_btn)
+
+        down_btn = QPushButton("⬇ Вниз")
+        down_btn.clicked.connect(lambda: self._move_device(1))
+        btns_layout.addWidget(down_btn)
+
+        btns_layout.addStretch()
+        top_row.addWidget(btns_widget)
+
+        route_layout.addLayout(top_row)
         layout.addWidget(route_group)
 
-        # Параметры кабеля
-        cable_form = QFormLayout()
+        # ===== Сегменты канала =====
+        segments_group = QGroupBox("Сегменты канала (настройка каждого участка)")
+        segments_outer = QVBoxLayout(segments_group)
 
-        self.cable_combo = QComboBox()
-        self.cable_combo.addItems(["Ethernet", "Fiber Optic", "Serial", "Coaxial"])
-        cable_form.addRow("Тип кабеля:", self.cable_combo)
+        # Область прокрутки для сегментов
+        self.segments_scroll = QScrollArea()
+        self.segments_scroll.setWidgetResizable(True)
+        self.segments_scroll.setMinimumHeight(220)
+        self.segments_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        self.length_spin = QDoubleSpinBox()
-        self.length_spin.setRange(0.1, 10000.0)
-        self.length_spin.setValue(2.0)
-        self.length_spin.setSuffix(" м")
-        cable_form.addRow("Длина сегмента:", self.length_spin)
+        self.segments_container = QWidget()
+        self.segments_layout = QVBoxLayout(self.segments_container)
+        self.segments_layout.setSpacing(10)
+        self.segments_layout.setContentsMargins(0, 0, 0, 0)
+        self.segments_layout.addStretch()  # Прижмёт сегменты к верху
 
-        layout.addLayout(cable_form)
+        self.segments_scroll.setWidget(self.segments_container)
+        segments_outer.addWidget(self.segments_scroll)
 
-        # Кнопки
+        # Пустая подсказка
+        self.empty_hint = QLabel(
+            "Добавьте минимум два устройства, чтобы настроить сегменты канала."
+        )
+        self.empty_hint.setStyleSheet(
+            "color: #6b7280; font-style: italic; padding: 20px;"
+        )
+        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        segments_outer.addWidget(self.empty_hint)
+
+        layout.addWidget(segments_group, 1)
+
+        # ===== Итоговая информация =====
+        self.summary_label = QLabel()
+        self.summary_label.setStyleSheet(
+            "color: #4a5568; font-size: 12px; padding: 6px; "
+            "background-color: #f7f9fc; border-radius: 4px;"
+        )
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+
+        # ===== Кнопки диалога =====
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._create_channel)
         buttons.rejected.connect(self.reject)
+
+        # Изменяем текст кнопки OK
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_btn:
+            ok_btn.setText("Создать канал")
+
         layout.addWidget(buttons)
+
+        self._update_summary()
+
+    # ========================================================
+    #  УПРАВЛЕНИЕ МАРШРУТОМ
+    # ========================================================
 
     def _add_device(self):
         """Открывает диалог выбора устройства и добавляет его в маршрут."""
         if not self.model.devices:
-            QMessageBox.warning(self, "Внимание", "Нет устройств на схеме")
+            QMessageBox.warning(
+                self, "Внимание", "На схеме нет устройств"
+            )
             return
 
-        # Диалог выбора устройства
+        # Простой диалог выбора
+        device = self._show_device_selector()
+        if device:
+            self.route_devices.append(device)
+            self.route_list.addItem(f"{len(self.route_devices)}. {device.name}")
+            self._rebuild_segments()
+
+    def _show_device_selector(self) -> Optional[Device]:
+        """Показывает диалог выбора устройства из списка."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Выберите устройство")
-        dialog.resize(300, 400)
+        dialog.resize(400, 500)
 
         layout = QVBoxLayout(dialog)
+
+        # Поиск
+        search = QLineEdit()
+        search.setPlaceholderText("🔍 Поиск по имени...")
+        layout.addWidget(search)
+
         list_widget = QListWidget()
         for d in self.model.devices:
-            item = QListWidgetItem(f"{d.name} ({d.device_type})")
+            item = QListWidgetItem(f"{d.name}  ({d.device_type})")
             item.setData(Qt.ItemDataRole.UserRole, d.id)
             list_widget.addItem(item)
         layout.addWidget(list_widget)
+
+        # Фильтр
+        def filter_items(text):
+            text = text.lower()
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                item.setHidden(text not in item.text().lower())
+
+        search.textChanged.connect(filter_items)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -1594,17 +1851,13 @@ class ChannelCreationDialog(QDialog):
         layout.addWidget(buttons)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            current = list_widget.currentItem()
-            if current:
-                dev_id = current.data(Qt.ItemDataRole.UserRole)
-                device = next(
+            item = list_widget.currentItem()
+            if item:
+                dev_id = item.data(Qt.ItemDataRole.UserRole)
+                return next(
                     (d for d in self.model.devices if d.id == dev_id), None
                 )
-                if device:
-                    self.route_devices.append(device)
-                    self.route_list.addItem(
-                        f"{len(self.route_devices)}. {device.name}"
-                    )
+        return None
 
     def _remove_device(self):
         """Удаляет выбранное устройство из маршрута."""
@@ -1612,52 +1865,176 @@ class ChannelCreationDialog(QDialog):
         if row >= 0:
             self.route_list.takeItem(row)
             del self.route_devices[row]
-            # Обновляем нумерацию
-            for i in range(self.route_list.count()):
-                item = self.route_list.item(i)
-                item.setText(f"{i + 1}. {self.route_devices[i].name}")
+            self._renumber_route()
+            self._rebuild_segments()
+
+    def _move_device(self, direction: int):
+        """Перемещает выбранное устройство вверх/вниз по маршруту."""
+        row = self.route_list.currentRow()
+        new_row = row + direction
+        if 0 <= row < len(self.route_devices) and 0 <= new_row < len(self.route_devices):
+            # Меняем местами
+            self.route_devices[row], self.route_devices[new_row] = \
+                self.route_devices[new_row], self.route_devices[row]
+
+            # Обновляем список
+            text = self.route_list.takeItem(row)
+            self.route_list.insertItem(new_row, text)
+            self.route_list.setCurrentRow(new_row)
+
+            self._renumber_route()
+            self._rebuild_segments()
+
+    def _renumber_route(self):
+        """Обновляет нумерацию в списке устройств."""
+        for i in range(self.route_list.count()):
+            item = self.route_list.item(i)
+            item.setText(f"{i + 1}. {self.route_devices[i].name}")
+
+    # ========================================================
+    #  ПОСТРОЕНИЕ СЕГМЕНТОВ
+    # ========================================================
+
+    def _rebuild_segments(self):
+        """
+        Пересоздаёт виджеты сегментов при изменении маршрута.
+        """
+        # Удаляем старые виджеты
+        for w in self.segment_widgets:
+            self.segments_layout.removeWidget(w)
+            w.deleteLater()
+        self.segment_widgets.clear()
+
+        # Убираем растяжку
+        while self.segments_layout.count() > 1:
+            item = self.segments_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Показываем/скрываем подсказку
+        self.empty_hint.setVisible(len(self.route_devices) < 2)
+
+        # Создаём новые сегменты
+        if len(self.route_devices) >= 2:
+            for i in range(len(self.route_devices) - 1):
+                d1 = self.route_devices[i]
+                d2 = self.route_devices[i + 1]
+
+                segment = ChannelSegmentWidget(
+                    self.model, d1, d2, i + 1, self
+                )
+                segment.removed.connect(self._on_segment_removed)
+
+                self.segment_widgets.append(segment)
+                # Вставляем перед растяжкой
+                self.segments_layout.insertWidget(i, segment)
+
+        self._update_summary()
+
+    def _on_segment_removed(self, segment):
+        """Обработка удаления сегмента (опционально)."""
+        pass
+
+    # ========================================================
+    #  ИТОГОВАЯ ИНФОРМАЦИЯ
+    # ========================================================
+
+    def _update_summary(self):
+        """Обновляет сводку по каналу."""
+        if len(self.route_devices) < 2:
+            self.summary_label.setText(
+                "ℹ️ Добавьте минимум два устройства для создания канала."
+            )
+            return
+
+        total_length = 0.0
+        cable_types = set()
+        for widget in self.segment_widgets:
+            data = widget.get_connection_data()
+            if data:
+                total_length += data['length']
+                cable_types.add(data['cable_type'])
+
+        route_str = " → ".join(d.name for d in self.route_devices)
+        cable_str = ", ".join(sorted(cable_types)) if cable_types else "—"
+
+        self.summary_label.setText(
+            f"📊 <b>Маршрут:</b> {route_str}<br>"
+            f"📏 <b>Сегментов:</b> {len(self.segment_widgets)}  •  "
+            f"<b>Общая длина:</b> {total_length:.1f} м  •  "
+            f"<b>Типы кабелей:</b> {cable_str}"
+        )
+        self.summary_label.setTextFormat(Qt.TextFormat.RichText)
+
+    # ========================================================
+    #  СОЗДАНИЕ КАНАЛА
+    # ========================================================
 
     def _create_channel(self):
-        """Создаёт канал — соединяет устройства по цепочке."""
+        """Создаёт канал — соединения по всем сегментам."""
+        # Проверки
         if len(self.route_devices) < 2:
-            QMessageBox.warning(self, "Ошибка", "Добавьте минимум 2 устройства")
+            QMessageBox.warning(
+                self, "Ошибка", "Добавьте минимум 2 устройства в маршрут."
+            )
             return
 
         name = self.name_edit.text().strip() or "Новый канал"
-        cable_type = self.cable_combo.currentText()
-        length = self.length_spin.value()
 
+        # Проверяем корректность всех сегментов
+        errors = []
+        for i, widget in enumerate(self.segment_widgets):
+            valid, error = widget.is_valid()
+            if not valid:
+                errors.append(f"Сегмент {i + 1}: {error}")
+
+        if errors:
+            QMessageBox.warning(
+                self, "Ошибки в сегментах",
+                "Исправьте следующие проблемы:\n\n" + "\n".join(errors)
+            )
+            return
+
+        # Создаём группу
         group = self.model.create_group(name)
+
+        # Создаём соединения
         success = 0
+        failed = []
 
-        # Соединяем устройства по цепочке
-        for i in range(len(self.route_devices) - 1):
-            d1 = self.route_devices[i]
-            d2 = self.route_devices[i + 1]
+        for i, widget in enumerate(self.segment_widgets):
+            data = widget.get_connection_data()
+            if not data:
+                continue
 
-            # Ищем свободные порты
-            out_port = next(
-                (p for p in d1.output_ports
-                 if not any(p in (c.port1, c.port2)
-                            for c in self.model.connections)),
-                None
-            )
-            in_port = next(
-                (p for p in d2.input_ports
-                 if not any(p in (c.port1, c.port2)
-                            for c in self.model.connections)),
-                None
+            conn = self.model.add_connection(
+                data['out_port'],
+                data['in_port'],
+                data['cable_type'],
+                data['length'],
+                group.id
             )
 
-            if out_port and in_port:
-                if self.model.add_connection(
-                        out_port, in_port, cable_type, length, group.id):
-                    success += 1
+            if conn:
+                success += 1
+            else:
+                failed.append(f"Сегмент {i + 1}")
 
-        QMessageBox.information(
-            self, "Успех",
-            f"Канал '{name}' создан!\nСоединений: {success}"
-        )
+        # Если ничего не создано — удаляем пустую группу
+        if success == 0:
+            self.model.remove_group(group)
+            QMessageBox.critical(
+                self, "Ошибка",
+                "Не удалось создать ни одного соединения."
+            )
+            return
+
+        # Информация об успехе
+        message = f"Канал «{name}» создан!\n\nСоединений: {success}"
+        if failed:
+            message += f"\nНе удалось: {', '.join(failed)}"
+
+        QMessageBox.information(self, "Успех", message)
         self.accept()
 
 
@@ -1783,6 +2160,227 @@ class GroupManagementDialog(QDialog):
                 self._refresh_list()
 
 
+class ChannelSegmentWidget(QGroupBox):
+    """
+    Виджет одного сегмента канала.
+
+    Представляет соединение между двумя соседними устройствами маршрута.
+    Позволяет выбрать:
+      - выходной порт первого устройства
+      - входной порт второго устройства
+      - тип кабеля
+      - длину кабеля
+    """
+
+    removed = pyqtSignal(object)  # сигнал об удалении сегмента
+
+    def __init__(self, model: NetworkModel, device1: Device, device2: Device,
+                 index: int, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self.device1 = device1
+        self.device2 = device2
+        self.index = index
+
+        self.setTitle(f"Сегмент {index}: {device1.name} → {device2.name}")
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Создаёт интерфейс сегмента."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # ===== Строка 1: Выходной порт =====
+        out_row = QHBoxLayout()
+        out_row.addWidget(QLabel("Выходной порт:"))
+
+        self.out_port_combo = QComboBox()
+        self.out_port_combo.setMinimumWidth(200)
+        self._populate_out_ports()
+        out_row.addWidget(self.out_port_combo, 1)
+        layout.addLayout(out_row)
+
+        # ===== Строка 2: Входной порт =====
+        in_row = QHBoxLayout()
+        in_row.addWidget(QLabel("Входной порт:"))
+
+        self.in_port_combo = QComboBox()
+        self.in_port_combo.setMinimumWidth(200)
+        self._populate_in_ports()
+        in_row.addWidget(self.in_port_combo, 1)
+        layout.addLayout(in_row)
+
+        # ===== Строка 3: Тип кабеля и длина =====
+        cable_row = QHBoxLayout()
+        cable_row.addWidget(QLabel("Кабель:"))
+
+        self.cable_combo = QComboBox()
+        self.cable_combo.addItems([
+            "Ethernet", "Fiber Optic", "Serial", "Coaxial"
+        ])
+        self.cable_combo.setMinimumWidth(120)
+        cable_row.addWidget(self.cable_combo)
+
+        cable_row.addWidget(QLabel("Длина:"))
+
+        self.length_spin = QDoubleSpinBox()
+        self.length_spin.setRange(0.1, 10000.0)
+        self.length_spin.setValue(2.0)
+        self.length_spin.setSuffix(" м")
+        self.length_spin.setDecimals(1)
+        self.length_spin.setMaximumWidth(100)
+        cable_row.addWidget(self.length_spin)
+
+        cable_row.addStretch()
+        layout.addLayout(cable_row)
+
+        # ===== Индикатор занятости =====
+        self.status_label = QLabel()
+        self.status_label.setStyleSheet("font-size: 11px; padding: 4px;")
+        layout.addWidget(self.status_label)
+
+        # Подключаем обновление статуса
+        self.out_port_combo.currentIndexChanged.connect(self._update_status)
+        self.in_port_combo.currentIndexChanged.connect(self._update_status)
+        self._update_status()
+
+    def _populate_out_ports(self):
+        """Заполняет список выходных портов с учётом занятости."""
+        self.out_port_combo.clear()
+
+        # Собираем порты, уже выбранные в других сегментах диалога
+        # (нужно проверить через parent)
+        reserved_ports = set()
+        parent = self.parent()
+        while parent and not hasattr(parent, 'segment_widgets'):
+            parent = parent.parent()
+
+        if parent and hasattr(parent, 'segment_widgets'):
+            for w in parent.segment_widgets:
+                if w is self:
+                    continue
+                data = w.get_connection_data()
+                if data:
+                    reserved_ports.add(id(data['out_port']))
+                    reserved_ports.add(id(data['in_port']))
+
+        for port in self.device1.output_ports:
+            is_busy = self.model.is_port_connected(port)
+            is_reserved = id(port) in reserved_ports
+
+            if is_busy:
+                prefix, suffix, enabled = "❌ ", " (занят)", False
+            elif is_reserved:
+                prefix, suffix, enabled = "🔒 ", " (уже выбран)", False
+            else:
+                prefix, suffix, enabled = "✅ ", "", True
+
+            self.out_port_combo.addItem(f"{prefix}{port.name}{suffix}", port)
+
+            idx = self.out_port_combo.count() - 1
+            item = self.out_port_combo.model().item(idx)
+            if item and not enabled:
+                item.setEnabled(False)
+
+    def _populate_in_ports(self):
+        """
+        Заполняет список входных портов.
+        Занятые порты помечаются и недоступны для выбора.
+        """
+
+        self.in_port_combo.clear()
+
+        # Собираем порты, уже выбранные в других сегментах диалога
+        # (нужно проверить через parent)
+        reserved_ports = set()
+        parent = self.parent()
+        while parent and not hasattr(parent, 'segment_widgets'):
+            parent = parent.parent()
+
+        if parent and hasattr(parent, 'segment_widgets'):
+            for w in parent.segment_widgets:
+                if w is self:
+                    continue
+                data = w.get_connection_data()
+                if data:
+                    reserved_ports.add(id(data['out_port']))
+                    reserved_ports.add(id(data['in_port']))
+
+        for port in self.device2.input_ports:
+            is_busy = self.model.is_port_connected(port)
+            is_reserved = id(port) in reserved_ports
+
+            if is_busy:
+                prefix, suffix, enabled = "❌ ", " (занят)", False
+            elif is_reserved:
+                prefix, suffix, enabled = "🔒 ", " (уже выбран)", False
+            else:
+                prefix, suffix, enabled = "✅ ", "", True
+
+            self.in_port_combo.addItem(f"{prefix}{port.name}{suffix}", port)
+
+            idx = self.in_port_combo.count() - 1
+            item = self.in_port_combo.model().item(idx)
+            if item and not enabled:
+                item.setEnabled(False)
+
+    def _update_status(self):
+        """Обновляет индикатор состояния сегмента."""
+        out_port = self.out_port_combo.currentData()
+        in_port = self.in_port_combo.currentData()
+
+        if out_port is None or in_port is None:
+            self.status_label.setText("⚠️ Выберите порты")
+            self.status_label.setStyleSheet(
+                "color: #b45309; font-size: 11px; padding: 4px;"
+            )
+            return
+
+        # Проверка возможности соединения
+        can, error = self.model.can_connect(out_port, in_port)
+        if can:
+            self.status_label.setText("✅ Соединение возможно")
+            self.status_label.setStyleSheet(
+                "color: #047857; font-size: 11px; padding: 4px;"
+            )
+        else:
+            self.status_label.setText(f"❌ {error}")
+            self.status_label.setStyleSheet(
+                "color: #b91c1c; font-size: 11px; padding: 4px;"
+            )
+
+    def get_connection_data(self) -> Optional[dict]:
+        """
+        Возвращает данные для создания соединения.
+
+        Returns:
+            Словарь с полями out_port, in_port, cable_type, length
+            или None, если порты не выбраны.
+        """
+        out_port = self.out_port_combo.currentData()
+        in_port = self.in_port_combo.currentData()
+
+        if not out_port or not in_port:
+            return None
+
+        return {
+            'out_port': out_port,
+            'in_port': in_port,
+            'cable_type': self.cable_combo.currentText(),
+            'length': self.length_spin.value()
+        }
+
+    def is_valid(self) -> Tuple[bool, str]:
+        """Проверяет корректность сегмента."""
+        data = self.get_connection_data()
+        if not data:
+            return False, "Не выбраны порты"
+
+        can, error = self.model.can_connect(data['out_port'], data['in_port'])
+        if not can:
+            return False, error
+
+        return True, ""
 # ============================================================
 #  КОНТРОЛЛЕР (Controller)
 # ============================================================
@@ -1826,6 +2424,8 @@ class NetworkController(QObject):
         """Обработка запроса на создание канала."""
         dialog = ChannelCreationDialog(self.model, self.canvas)
         dialog.exec()
+        # Обновляем канвас после создания канала
+        self.canvas.update()
 
     def _on_groups_requested(self):
         """Обработка запроса на управление группами."""
@@ -2169,23 +2769,13 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(spacer)
 
     def _setup_statusbar(self):
-        """Создаёт строку состояния."""
+        """Создаёт строку состояния с динамической подсказкой."""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.setStyleSheet("""
-            QStatusBar {
-                background-color: #ffffff;
-                border-top: 1px solid #e3e8ef;
-                color: #6b7280;
-                font-size: 12px;
-                padding: 4px 10px;
-            }
-        """)
         self.status_bar.showMessage(
             "ПКМ на канвасе — создать устройство  •  "
-            "ПКМ на порте — начать соединение  •  "
-            "Ctrl+ЛКМ — панорамирование  •  "
-            "Колесико — масштаб"
+            "ПКМ на свободном выходном порте (■) — начать соединение  •  "
+            "Ctrl+ЛКМ — панорамирование  •  Колесико — масштаб"
         )
 
     def _create_demo_network(self):
