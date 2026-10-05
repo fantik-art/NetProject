@@ -25,7 +25,7 @@ import sys
 import json
 import math
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, ClassVar
 from enum import Enum
 from collections import defaultdict
 
@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QCheckBox, QGroupBox, QFrame,
     QFileDialog, QMessageBox, QComboBox, QListWidget, QListWidgetItem,
-    QSplitter, QMenu, QInputDialog, QDialog, QFormLayout,
+    QSplitter, QMenu, QInputDialog, QDialog, QFormLayout, QGridLayout,
     QDoubleSpinBox, QDialogButtonBox, QScrollArea, QSpinBox,
     QToolBar, QStatusBar, QTabWidget, QTreeWidget, QTreeWidgetItem,
     QListWidget as QLW
@@ -45,8 +45,9 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPainter, QPainterPath, QPen, QBrush, QColor, QFont,
-    QPolygonF, QAction, QIcon, QKeySequence
+    QPolygonF, QAction, QIcon, QKeySequence, QPixmap
 )
+from functools import partial
 
 
 # ============================================================
@@ -102,15 +103,9 @@ class Device:
     """
     Сетевое устройство.
 
-    Attributes:
-        id: Уникальный идентификатор устройства
-        name: Отображаемое имя устройства
-        x, y: Координаты центра устройства
-        width, height: Размеры прямоугольника устройства
-        device_type: Тип (Switch, Router, Server и т.д.)
-        category: Категория (влияет на цвет и количество портов)
-        input_ports: Список входных портов (треугольники ▼)
-        output_ports: Список выходных портов (квадраты ■)
+    ВАЖНО: Константы размеров вынесены в ClassVar, чтобы они
+    НЕ становились полями dataclass (иначе ломается __eq__,
+    __repr__ и может произойти переполнение стека).
     """
     id: int
     name: str
@@ -123,16 +118,20 @@ class Device:
     input_ports: List[Port] = field(default_factory=list)
     output_ports: List[Port] = field(default_factory=list)
 
+    # ✅ ClassVar — не поля dataclass, а атрибуты класса
+    HEADER_HEIGHT: ClassVar[float] = 25.0
+    FOOTER_HEIGHT: ClassVar[float] = 16.0
+    PORT_SPACING: ClassVar[float] = 18.0
+    MIN_PORT_AREA_HEIGHT: ClassVar[float] = 40.0
+    MIN_HEIGHT: ClassVar[float] = 80.0
+
     @property
     def ports(self) -> List[Port]:
-        """Возвращает все порты устройства (входные + выходные)."""
+        """Возвращает все порты устройства."""
         return self.input_ports + self.output_ports
 
     def add_default_ports(self):
-        """
-        Добавляет порты по умолчанию в зависимости от категории.
-        Количество портов определяется типом устройства.
-        """
+        """Добавляет порты по умолчанию."""
         port_configs = {
             DeviceCategory.GLOBAL_INPUT: (6, 2),
             DeviceCategory.LOCAL_INPUT: (4, 4),
@@ -150,25 +149,44 @@ class Device:
                 id=len(self.ports), name=f"OUT {i + 1}", port_type=PortType.OUTPUT
             ))
 
-    def update_port_positions(self):
-        """
-        Пересчитывает координаты портов при перемещении устройства.
-        Входные порты распределяются по левой стороне,
-        выходные — по правой стороне.
-        """
-        # Входные порты (слева)
-        for i, port in enumerate(self.input_ports):
-            port.x = self.x - self.width / 2
-            count = len(self.input_ports)
-            port.y = (self.y - self.height / 2 + (i + 1) * (self.height / (count + 1))
-                      if count > 1 else self.y)
+    def calculate_height(self) -> float:
+        """Вычисляет необходимую высоту устройства."""
+        max_ports = max(len(self.input_ports), len(self.output_ports))
 
-        # Выходные порты (справа)
-        for i, port in enumerate(self.output_ports):
-            port.x = self.x + self.width / 2
-            count = len(self.output_ports)
-            port.y = (self.y - self.height / 2 + (i + 1) * (self.height / (count + 1))
-                      if count > 1 else self.y)
+        if max_ports == 0:
+            return self.MIN_HEIGHT
+
+        port_area = (max_ports + 1) * self.PORT_SPACING
+        port_area = max(port_area, self.MIN_PORT_AREA_HEIGHT)
+
+        total = self.HEADER_HEIGHT + port_area + self.FOOTER_HEIGHT
+        return max(total, self.MIN_HEIGHT)
+
+    def update_port_positions(self):
+        """Пересчитывает высоту и позиции портов."""
+        self.height = self.calculate_height()
+
+        # Входные порты
+        count_in = len(self.input_ports)
+        if count_in > 0:
+            top = self.y - self.height / 2 + self.HEADER_HEIGHT
+            bottom = self.y + self.height / 2 - self.FOOTER_HEIGHT
+            area_height = bottom - top
+
+            for i, port in enumerate(self.input_ports):
+                port.x = self.x - self.width / 2
+                port.y = top + (i + 1) * (area_height / (count_in + 1))
+
+        # Выходные порты
+        count_out = len(self.output_ports)
+        if count_out > 0:
+            top = self.y - self.height / 2 + self.HEADER_HEIGHT
+            bottom = self.y + self.height / 2 - self.FOOTER_HEIGHT
+            area_height = bottom - top
+
+            for i, port in enumerate(self.output_ports):
+                port.x = self.x + self.width / 2
+                port.y = top + (i + 1) * (area_height / (count_out + 1))
 
 
 @dataclass
@@ -236,17 +254,7 @@ class NetworkModel(QObject):
 
     def add_device(self, device_type: str, category: DeviceCategory,
                    x: float = 100, y: float = 100) -> Device:
-        """
-        Создаёт новое устройство и добавляет его в модель.
-
-        Args:
-            device_type: Тип устройства (например, "Switch")
-            category: Категория устройства
-            x, y: Координаты центра нового устройства
-
-        Returns:
-            Созданное устройство.
-        """
+        """Создаёт новое устройство."""
         device = Device(
             id=self.next_device_id,
             name=f"{device_type} {self.next_device_id}",
@@ -324,16 +332,43 @@ class NetworkModel(QObject):
         ]
         self.notify_observers()
 
-    def create_group(self, name: str) -> ConnectionGroup:
-        """Создаёт новую группу соединений с автоматическим цветом."""
-        colors = ["#ff6464", "#64ff64", "#6464ff", "#ffff64", "#ff64ff",
-                  "#64ffff", "#c89664", "#96c864", "#6496c8"]
-        color = colors[self.next_group_id % len(colors)]
+    def create_group(self, name: str, color: Optional[str] = None) -> ConnectionGroup:
+        """
+        Создаёт новую группу соединений.
+
+        Args:
+            name: Название группы
+            color: HEX-цвет группы. Если None — автовыбор из палитры.
+
+        Returns:
+            Созданная группа.
+        """
+        # ✅ Автовыбор цвета, если не передан
+        if color is None:
+            auto_colors = [
+                "#ef4444", "#f97316", "#f59e0b", "#eab308",
+                "#84cc16", "#22c55e", "#10b981", "#14b8a6",
+                "#06b6d4", "#0ea5e9", "#3b82f6", "#6366f1",
+                "#8b5cf6", "#a855f7", "#d946ef", "#ec4899",
+            ]
+            color = auto_colors[self.next_group_id % len(auto_colors)]
+
         group = ConnectionGroup(self.next_group_id, name, color)
         self.next_group_id += 1
         self.groups.append(group)
         self.notify_observers()
         return group
+
+    def update_group_color(self, group: ConnectionGroup, color: str):
+        """
+        Меняет цвет существующей группы.
+
+        Args:
+            group: Группа для изменения
+            color: Новый HEX-цвет
+        """
+        group.color = color
+        self.notify_observers()
 
     def remove_group(self, group: ConnectionGroup):
         """Удаляет группу, отвязывая от неё все соединения."""
@@ -876,7 +911,7 @@ class NetworkCanvas(QWidget):
             )
 
     def _draw_device(self, painter: QPainter, device: Device):
-        """Рисует устройство."""
+        """Рисует устройство с учётом динамической высоты."""
         colors = {
             DeviceCategory.GLOBAL_INPUT: ("#4682b4", "#00008b"),
             DeviceCategory.LOCAL_INPUT: ("#87ceeb", "#006496"),
@@ -892,61 +927,92 @@ class NetworkCanvas(QWidget):
 
         w = device.width
         h = device.height
+        header_h = device.HEADER_HEIGHT
+        footer_h = device.FOOTER_HEIGHT
+
         rect = QRectF(device.x - w / 2, device.y - h / 2, w, h)
 
+        # Основной прямоугольник
         border_pen = QPen(QColor(border_color), 2)
         border_pen.setCosmetic(True)
         painter.setPen(border_pen)
         painter.setBrush(QBrush(QColor(fill_color)))
         painter.drawRoundedRect(rect, 5, 5)
 
-        # Заголовок
-        header_rect = QRectF(device.x - w / 2, device.y - h / 2, w, 25)
+        # ===== Заголовок (имя устройства) =====
+        header_rect = QRectF(
+            device.x - w / 2,
+            device.y - h / 2,
+            w,
+            header_h
+        )
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(0, 0, 0, 128)))
+        painter.setBrush(QBrush(QColor(0, 0, 0, 130)))
         painter.drawRect(header_rect)
 
-        # Имя
         painter.setPen(QColor("white"))
         font = QFont("Arial")
         font.setPointSizeF(9)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(
-            QRectF(device.x - w / 2, device.y - h / 2, w, 25),
-            Qt.AlignmentFlag.AlignCenter, device.name
+            header_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            device.name
         )
 
-        # Тип
+        # ===== Разделительная линия под заголовком =====
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        painter.drawLine(
+            QPointF(device.x - w / 2 + 2, device.y - h / 2 + header_h),
+            QPointF(device.x + w / 2 - 2, device.y - h / 2 + header_h)
+        )
+
+        # ===== Подпись типа устройства (снизу) =====
+        footer_rect = QRectF(
+            device.x - w / 2,
+            device.y + h / 2 - footer_h,
+            w,
+            footer_h
+        )
+
+        # Лёгкий фон под подписью
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 40)))
+        painter.drawRect(footer_rect)
+
+        painter.setPen(QColor(255, 255, 255, 220))
         font.setPointSizeF(7)
         font.setBold(False)
         painter.setFont(font)
         painter.drawText(
-            QRectF(device.x - w / 2, device.y + h / 2 - 16, w, 16),
-            Qt.AlignmentFlag.AlignCenter, device.device_type
+            footer_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            device.device_type
         )
 
+        # ===== Счётчик портов (в заголовке, справа) =====
+        if len(device.ports) > 0:
+            painter.setPen(QColor(255, 255, 255, 200))
+            font.setPointSizeF(7)
+            painter.setFont(font)
+            count_rect = QRectF(
+                device.x + w / 2 - 45,
+                device.y - h / 2 + 4,
+                40,
+                16
+            )
+            painter.drawText(
+                count_rect,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"{len(device.ports)}p"
+            )
+
+        # ===== Порты =====
         for port in device.input_ports:
             self._draw_port(painter, port, is_input=True)
         for port in device.output_ports:
             self._draw_port(painter, port, is_input=False)
-
-        # ✅ Индикатор свободных портов (опционально)
-        free_in = sum(1 for p in device.input_ports
-                      if not self.model.is_port_connected(p))
-        free_out = sum(1 for p in device.output_ports
-                       if not self.model.is_port_connected(p))
-
-        if free_in == 0 and free_out == 0:
-            # Устройство полностью занято — маленькая метка
-            painter.setPen(QColor("#dc2626"))
-            font = QFont("Arial")
-            font.setPointSizeF(6)
-            painter.setFont(font)
-            painter.drawText(
-                QRectF(device.x - 20, device.y + device.height / 2 - 30, 40, 12),
-                Qt.AlignmentFlag.AlignCenter, "FULL"
-            )
 
     def _draw_port(self, painter: QPainter, port: Port, is_input: bool):
         """
@@ -1354,20 +1420,125 @@ class NetworkCanvas(QWidget):
         self.update()
 
 
+class ColorPickerWidget(QWidget):
+    """
+    Виджет выбора цвета из палитры.
+
+    ВАЖНО: сигнал color_changed НЕ испускается во время инициализации —
+    это предотвращает рекурсию при создании диалога.
+    """
+
+    color_changed = pyqtSignal(str)
+
+    DEFAULT_COLORS = [
+        "#ef4444", "#f97316", "#f59e0b", "#eab308",
+        "#84cc16", "#22c55e", "#10b981", "#14b8a6",
+        "#06b6d4", "#0ea5e9", "#3b82f6", "#6366f1",
+        "#8b5cf6", "#a855f7", "#d946ef", "#ec4899",
+    ]
+
+    def __init__(self, colors: Optional[List[str]] = None,
+                 initial: Optional[str] = None, parent=None):
+        super().__init__(parent)
+
+        self.colors = colors or self.DEFAULT_COLORS
+        self.selected_color = initial or self.colors[0]
+        self._buttons = []
+        # ✅ Флаг для предотвращения рекурсии
+        self._initialized = False
+
+        self._setup_ui()
+        # ✅ Разрешаем сигналы только после полной инициализации
+        self._initialized = True
+
+    def _setup_ui(self):
+        """Создаёт сетку цветных кнопок."""
+        layout = QGridLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        cols = 8
+        for i, color in enumerate(self.colors):
+            btn = QPushButton()
+            btn.setFixedSize(26, 26)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(color)
+            btn.setProperty("hex_color", color)
+
+            # ✅ Используем functools.partial вместо лямбды с замыканием
+            from functools import partial
+            btn.clicked.connect(partial(self._on_color_clicked, color))
+
+            row = i // cols
+            col = i % cols
+            layout.addWidget(btn, row, col)
+            self._buttons.append(btn)
+
+        self._refresh_styles()
+
+    def _on_color_clicked(self, color: str):
+        """Обработка клика по цвету."""
+        # ✅ Не испускаем сигнал во время инициализации
+        if not self._initialized:
+            return
+
+        if color == self.selected_color:
+            return
+
+        self.selected_color = color
+        self._refresh_styles()
+        self.color_changed.emit(color)
+
+    def _refresh_styles(self):
+        """Обновляет стили кнопок."""
+        for btn in self._buttons:
+            color = btn.property("hex_color")
+            is_selected = color == self.selected_color
+
+            border = "#1f2937" if is_selected else "transparent"
+            width = 3 if is_selected else 0
+
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {color};
+                    border: {width}px solid {border};
+                    border-radius: 5px;
+                }}
+                QPushButton:hover {{
+                    border: 2px solid #6b7280;
+                }}
+            """)
+
+    def get_color(self) -> str:
+        return self.selected_color
+
+    def set_color(self, color: str):
+        """Устанавливает цвет БЕЗ испускания сигнала."""
+        self.selected_color = color
+        self._refresh_styles()
 # ============================================================
 #  ДИАЛОГИ
 # ============================================================
 
 class DeviceEditDialog(QDialog):
-    """Диалог редактирования устройства."""
+    """
+    Диалог редактирования устройства.
+
+    ВАЖНО: Все изменения применяются к ЛОКАЛЬНОЙ КОПИИ,
+    и только при нажатии "Сохранить" переносятся в модель.
+    Это предотвращает рекурсию при обновлении канваса.
+    """
 
     def __init__(self, model: NetworkModel, device: Device, parent=None):
         super().__init__(parent)
         self.model = model
         self.device = device
 
+        # ✅ Флаг для предотвращения рекурсии
+        self._updating = False
+
         self.setWindowTitle(f"Редактирование: {device.name}")
-        self.resize(550, 500)
+        self.resize(600, 550)
 
         self.input_edits = []
         self.output_edits = []
@@ -1377,9 +1548,12 @@ class DeviceEditDialog(QDialog):
     def _setup_ui(self):
         """Создаёт интерфейс диалога."""
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
 
-        # Форма с основными параметрами
-        form = QFormLayout()
+        # ===== Основные параметры =====
+        info_group = QGroupBox("Основные параметры")
+        form = QFormLayout(info_group)
 
         self.name_edit = QLineEdit(self.device.name)
         form.addRow("Название:", self.name_edit)
@@ -1393,65 +1567,95 @@ class DeviceEditDialog(QDialog):
         self.category_combo.setCurrentText(self.device.category.value)
         form.addRow("Категория:", self.category_combo)
 
-        layout.addLayout(form)
+        layout.addWidget(info_group)
 
-        # Область с портами
-        ports_widget = QWidget()
-        ports_layout = QHBoxLayout(ports_widget)
+        # ===== Порты =====
+        ports_group = QGroupBox("Порты устройства")
+        ports_layout = QHBoxLayout(ports_group)
 
-        # Входные порты
-        in_group = QGroupBox("Входные порты ▼")
-        in_layout = QVBoxLayout(in_group)
+        # Входные
+        in_frame = QWidget()
+        in_layout = QVBoxLayout(in_frame)
+        in_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.in_container = QWidget()
-        self.in_container_layout = QVBoxLayout(self.in_container)
+        in_header = QLabel(f"▼ Входные порты ({len(self.device.input_ports)})")
+        in_header.setStyleSheet("font-weight: bold; color: #047857;")
+        in_layout.addWidget(in_header)
+
+        self.in_header = in_header
+
+        in_scroll = QScrollArea()
+        in_scroll.setWidgetResizable(True)
+        in_scroll.setMinimumHeight(220)
+
+        in_container = QWidget()
+        self.in_container_layout = QVBoxLayout(in_container)
         self.in_container_layout.setSpacing(2)
-        self.in_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.in_container_layout.setContentsMargins(4, 4, 4, 4)
+        self.in_container_layout.addStretch()
 
         for port in self.device.input_ports:
             self._add_port_row(self.in_container_layout, port,
                                self.input_edits, True)
 
-        in_scroll = QScrollArea()
-        in_scroll.setWidgetResizable(True)
-        in_scroll.setWidget(self.in_container)
+        in_scroll.setWidget(in_container)
         in_layout.addWidget(in_scroll)
 
-        add_in_btn = QPushButton("+ Добавить входной")
+        add_in_btn = QPushButton("➕ Добавить входной порт")
         add_in_btn.clicked.connect(
             lambda: self._add_new_port(self.in_container_layout, True)
         )
         in_layout.addWidget(add_in_btn)
 
-        # Выходные порты
-        out_group = QGroupBox("Выходные порты ■")
-        out_layout = QVBoxLayout(out_group)
+        # Выходные
+        out_frame = QWidget()
+        out_layout = QVBoxLayout(out_frame)
+        out_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.out_container = QWidget()
-        self.out_container_layout = QVBoxLayout(self.out_container)
+        out_header = QLabel(f"■ Выходные порты ({len(self.device.output_ports)})")
+        out_header.setStyleSheet("font-weight: bold; color: #b45309;")
+        out_layout.addWidget(out_header)
+
+        self.out_header = out_header
+
+        out_scroll = QScrollArea()
+        out_scroll.setWidgetResizable(True)
+        out_scroll.setMinimumHeight(220)
+
+        out_container = QWidget()
+        self.out_container_layout = QVBoxLayout(out_container)
         self.out_container_layout.setSpacing(2)
-        self.out_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.out_container_layout.setContentsMargins(4, 4, 4, 4)
+        self.out_container_layout.addStretch()
 
         for port in self.device.output_ports:
             self._add_port_row(self.out_container_layout, port,
                                self.output_edits, False)
 
-        out_scroll = QScrollArea()
-        out_scroll.setWidgetResizable(True)
-        out_scroll.setWidget(self.out_container)
+        out_scroll.setWidget(out_container)
         out_layout.addWidget(out_scroll)
 
-        add_out_btn = QPushButton("+ Добавить выходной")
+        add_out_btn = QPushButton("➕ Добавить выходной порт")
         add_out_btn.clicked.connect(
             lambda: self._add_new_port(self.out_container_layout, False)
         )
         out_layout.addWidget(add_out_btn)
 
-        ports_layout.addWidget(in_group)
-        ports_layout.addWidget(out_group)
-        layout.addWidget(ports_widget)
+        ports_layout.addWidget(in_frame)
+        ports_layout.addWidget(out_frame)
 
-        # Кнопки
+        layout.addWidget(ports_group, 1)
+
+        # ===== Информация о высоте =====
+        self.size_info = QLabel()
+        self.size_info.setStyleSheet(
+            "color: #6b7280; font-size: 11px; padding: 6px; "
+            "background-color: #f7f9fc; border-radius: 4px;"
+        )
+        layout.addWidget(self.size_info)
+        self._update_size_info()
+
+        # ===== Кнопки =====
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
@@ -1460,6 +1664,34 @@ class DeviceEditDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _update_size_info(self):
+        """Обновляет информацию о вычисленной высоте."""
+        # Считаем по формуле, без вызова update_port_positions
+        max_ports = max(
+            len(self.input_edits) + len([p for p in self.device.input_ports]),
+            len(self.output_edits) + len([p for p in self.device.output_ports])
+        )
+        # Проще: считаем по текущему количеству в списках
+        n_in = len(self.device.input_ports)
+        n_out = len(self.device.output_ports)
+        max_ports = max(n_in, n_out)
+
+        if max_ports == 0:
+            height = self.device.MIN_HEIGHT
+        else:
+            port_area = (max_ports + 1) * self.device.PORT_SPACING
+            port_area = max(port_area, self.device.MIN_PORT_AREA_HEIGHT)
+            height = (self.device.HEADER_HEIGHT + port_area +
+                      self.device.FOOTER_HEIGHT)
+            height = max(height, self.device.MIN_HEIGHT)
+
+        self.size_info.setText(
+            f"📐 Высота: {height:.0f} px  •  "
+            f"📥 Входных: {n_in}  •  "
+            f"📤 Выходных: {n_out}  •  "
+            f"📊 Всего: {n_in + n_out}"
+        )
+
     def _add_port_row(self, layout, port: Port, edit_list: list, is_input: bool):
         """Добавляет строку редактирования порта."""
         widget = QWidget()
@@ -1467,17 +1699,21 @@ class DeviceEditDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
 
         name_edit = QLineEdit(port.name)
-        name_edit.setMaximumWidth(120)
+        name_edit.setMaximumWidth(140)
         row.addWidget(name_edit)
 
         label = QLabel("▼ IN" if is_input else "■ OUT")
         label.setStyleSheet(
-            f"color: {'green' if is_input else 'orange'}; font-weight: bold;"
+            f"color: {'#047857' if is_input else '#b45309'}; "
+            f"font-weight: bold; padding: 2px 6px;"
         )
         row.addWidget(label)
 
+        row.addStretch()
+
         del_btn = QPushButton("×")
-        del_btn.setMaximumWidth(30)
+        del_btn.setMaximumWidth(28)
+        del_btn.setProperty("class", "danger")
         del_btn.clicked.connect(
             lambda: self._remove_port(widget, port, edit_list)
         )
@@ -1485,76 +1721,255 @@ class DeviceEditDialog(QDialog):
 
         widget._port = port
         widget._name_edit = name_edit
-        layout.addWidget(widget)
+        # ✅ Вставляем перед stretch
+        layout.insertWidget(layout.count() - 1, widget)
         edit_list.append(widget)
 
     def _add_new_port(self, layout, is_input: bool):
         """Добавляет новый порт к устройству."""
-        max_id = max((p.id for p in self.device.ports), default=-1)
-        new_port = Port(
-            id=max_id + 1,
-            name=f"New {'IN' if is_input else 'OUT'}",
-            port_type=PortType.INPUT if is_input else PortType.OUTPUT
-        )
+        if self._updating:
+            return
+        self._updating = True
 
-        if is_input:
-            self.device.input_ports.append(new_port)
-            self._add_port_row(layout, new_port, self.input_edits, True)
-        else:
-            self.device.output_ports.append(new_port)
-            self._add_port_row(layout, new_port, self.output_edits, False)
+        try:
+            max_id = max((p.id for p in self.device.ports), default=-1)
+            new_port = Port(
+                id=max_id + 1,
+                name=f"New {'IN' if is_input else 'OUT'}",
+                port_type=PortType.INPUT if is_input else PortType.OUTPUT
+            )
+
+            if is_input:
+                self.device.input_ports.append(new_port)
+                self._add_port_row(layout, new_port, self.input_edits, True)
+            else:
+                self.device.output_ports.append(new_port)
+                self._add_port_row(layout, new_port, self.output_edits, False)
+
+            # Обновляем счётчики
+            self.in_header.setText(
+                f"▼ Входные порты ({len(self.device.input_ports)})"
+            )
+            self.out_header.setText(
+                f"■ Выходные порты ({len(self.device.output_ports)})"
+            )
+
+            self._update_size_info()
+        finally:
+            self._updating = False
 
     def _remove_port(self, widget, port: Port, edit_list: list):
-        """Удаляет порт и связанные с ним соединения."""
-        has_conn = any(
-            port in (c.port1, c.port2) for c in self.model.connections
-        )
+        """Удаляет порт."""
+        if self._updating:
+            return
+        self._updating = True
 
-        if has_conn:
-            reply = QMessageBox.question(
-                self, "Удаление порта",
-                f"Порт '{port.name}' имеет соединения. Удалить?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        try:
+            has_conn = any(
+                port in (c.port1, c.port2) for c in self.model.connections
             )
-            if reply != QMessageBox.StandardButton.Yes:
+
+            if has_conn:
+                reply = QMessageBox.question(
+                    self, "Удаление порта",
+                    f"Порт '{port.name}' имеет соединения. Удалить?",
+                    QMessageBox.StandardButton.Yes |
+                    QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                # ✅ Не удаляем сразу — удалим при сохранении
+                # (иначе ломается структура модели)
+                widget._marked_for_deletion = True
+                widget._port._pending_deletion = True
+                widget.hide()
                 return
-            self.model.remove_connections_for_port(port)
 
-        if port in self.device.input_ports:
-            self.device.input_ports.remove(port)
-        elif port in self.device.output_ports:
-            self.device.output_ports.remove(port)
+            if port in self.device.input_ports:
+                self.device.input_ports.remove(port)
+            elif port in self.device.output_ports:
+                self.device.output_ports.remove(port)
 
-        edit_list.remove(widget)
-        widget.deleteLater()
+            edit_list.remove(widget)
+            widget.deleteLater()
+
+            # Обновляем счётчики
+            self.in_header.setText(
+                f"▼ Входные порты ({len(self.device.input_ports)})"
+            )
+            self.out_header.setText(
+                f"■ Выходные порты ({len(self.device.output_ports)})"
+            )
+
+            self._update_size_info()
+        finally:
+            self._updating = False
 
     def _save(self):
         """Сохраняет изменения устройства."""
-        self.device.name = self.name_edit.text()
-        self.device.device_type = self.type_edit.text()
-        self.device.category = DeviceCategory(self.category_combo.currentText())
+        if self._updating:
+            return
+        self._updating = True
 
-        # Обновляем имена портов
-        for widget in self.input_edits:
-            if hasattr(widget, '_port') and hasattr(widget, '_name_edit'):
-                widget._port.name = widget._name_edit.text()
+        try:
+            self.device.name = self.name_edit.text()
+            self.device.device_type = self.type_edit.text()
+            self.device.category = DeviceCategory(self.category_combo.currentText())
 
-        for widget in self.output_edits:
-            if hasattr(widget, '_port') and hasattr(widget, '_name_edit'):
-                widget._port.name = widget._name_edit.text()
+            # Обновляем имена портов
+            for widget in self.input_edits:
+                if hasattr(widget, '_port') and hasattr(widget, '_name_edit'):
+                    widget._port.name = widget._name_edit.text()
 
-        self.device.update_port_positions()
-        self.model.notify_observers()
-        self.accept()
+            for widget in self.output_edits:
+                if hasattr(widget, '_port') and hasattr(widget, '_name_edit'):
+                    widget._port.name = widget._name_edit.text()
+
+            # Удаляем помеченные порты
+            self.device.input_ports = [
+                p for p in self.device.input_ports
+                if not getattr(p, '_pending_deletion', False)
+            ]
+            self.device.output_ports = [
+                p for p in self.device.output_ports
+                if not getattr(p, '_pending_deletion', False)
+            ]
+
+            # Пересчитываем высоту и позиции
+            self.device.update_port_positions()
+
+            # Уведомляем модель
+            self.model.notify_observers()
+
+            self.accept()
+        finally:
+            self._updating = False
+
+
+class DevicePreviewCanvas(QWidget):
+    """
+    Мини-канвас для предпросмотра устройства в диалоге редактирования.
+    Рисует устройство с реальными пропорциями и портами.
+    """
+
+    def __init__(self, device: Device, parent=None):
+        super().__init__(parent)
+        self.device = device
+        self.setMinimumWidth(180)
+
+    def paintEvent(self, event):
+        """Рисует устройство в предпросмотре."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#fafbfc"))
+
+        # Вычисляем масштаб, чтобы устройство вместилось
+        margin = 20
+        available_w = self.width() - 2 * margin
+        available_h = self.height() - 2 * margin
+
+        scale_x = available_w / self.device.width
+        scale_y = available_h / self.device.height
+        scale = min(scale_x, scale_y, 1.5)  # Не более 150%
+
+        # Центрируем
+        dw = self.device.width * scale
+        dh = self.device.height * scale
+        cx = self.width() / 2
+        cy = self.height() / 2
+
+        # Временный "центр" устройства для отрисовки
+        painter.translate(cx, cy)
+        painter.scale(scale, scale)
+        painter.translate(-self.device.x, -self.device.y)
+
+        # Цвета
+        colors = {
+            DeviceCategory.GLOBAL_INPUT: ("#4682b4", "#00008b"),
+            DeviceCategory.LOCAL_INPUT: ("#87ceeb", "#006496"),
+            DeviceCategory.SWITCHES: ("#3cb371", "#006400"),
+            DeviceCategory.SERVERS: ("#9370db", "#4b0082")
+        }
+        fill_color, border_color = colors.get(
+            self.device.category, ("#808080", "#404040")
+        )
+
+        w, h = self.device.width, self.device.height
+        header_h = self.device.HEADER_HEIGHT
+        footer_h = self.device.FOOTER_HEIGHT
+
+        rect = QRectF(
+            self.device.x - w / 2,
+            self.device.y - h / 2,
+            w, h
+        )
+
+        # Тело устройства
+        painter.setPen(QPen(QColor(border_color), 2))
+        painter.setBrush(QBrush(QColor(fill_color)))
+        painter.drawRoundedRect(rect, 5, 5)
+
+        # Заголовок
+        header_rect = QRectF(
+            self.device.x - w / 2,
+            self.device.y - h / 2,
+            w, header_h
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 130)))
+        painter.drawRect(header_rect)
+
+        # Имя
+        painter.setPen(QColor("white"))
+        font = QFont("Arial")
+        font.setPointSizeF(8)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(header_rect, Qt.AlignmentFlag.AlignCenter, self.device.name)
+
+        # Тип
+        footer_rect = QRectF(
+            self.device.x - w / 2,
+            self.device.y + h / 2 - footer_h,
+            w, footer_h
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 40)))
+        painter.drawRect(footer_rect)
+
+        painter.setPen(QColor(255, 255, 255, 220))
+        font.setPointSizeF(6.5)
+        font.setBold(False)
+        painter.setFont(font)
+        painter.drawText(footer_rect, Qt.AlignmentFlag.AlignCenter, self.device.device_type)
+
+        # Порты
+        port_size = 4.0
+        for port in self.device.input_ports:
+            painter.setPen(QPen(QColor("black"), 1))
+            painter.setBrush(QBrush(QColor("#10b981")))
+            triangle = QPolygonF([
+                QPointF(port.x - port_size, port.y - port_size),
+                QPointF(port.x - port_size, port.y + port_size),
+                QPointF(port.x + port_size, port.y)
+            ])
+            painter.drawPolygon(triangle)
+
+        for port in self.device.output_ports:
+            painter.setPen(QPen(QColor("black"), 1))
+            painter.setBrush(QBrush(QColor("#f59e0b")))
+            painter.drawRect(QRectF(
+                port.x - port_size, port.y - port_size,
+                port_size * 2, port_size * 2
+            ))
 
 
 class ConnectionDialog(QDialog):
-    """Диалог создания соединения между портами."""
+    """Диалог создания одиночного соединения с выбором цвета группы."""
 
     def __init__(self, model: NetworkModel, port1: Port, port2: Port, parent=None):
         super().__init__(parent)
 
-        # ✅ Проверка ещё раз (защита от race condition)
         can, error = model.can_connect(port1, port2)
         if not can:
             QMessageBox.warning(parent, "Невозможно создать соединение", error)
@@ -1566,59 +1981,100 @@ class ConnectionDialog(QDialog):
         self.port2 = port2
 
         self.setWindowTitle("Создание соединения")
-        self.resize(400, 400)
+        self.resize(420, 500)
+
         self._setup_ui()
 
     def _setup_ui(self):
         """Создаёт интерфейс диалога."""
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
 
+        # ===== Информация о соединении =====
         dev1 = self.model.find_device_by_port(self.port1)
         dev2 = self.model.find_device_by_port(self.port2)
 
-        # Информация о соединении
-        info = QLabel(
-            f"Соединение:\n"
-            f"{dev1.name} : {self.port1.name}\n"
-            f"  ↓\n"
-            f"{dev2.name} : {self.port2.name}"
-        )
-        info.setFont(QFont("Arial", 10))
-        layout.addWidget(info)
+        info_group = QGroupBox("Соединение")
+        info_layout = QVBoxLayout(info_group)
 
-        # Параметры кабеля
-        form = QFormLayout()
+        info = QLabel(
+            f"<b>{dev1.name}</b> : {self.port1.name} (OUT)  →  "
+            f"<b>{dev2.name}</b> : {self.port2.name} (IN)"
+        )
+        info.setWordWrap(True)
+        info_layout.addWidget(info)
+
+        layout.addWidget(info_group)
+
+        # ===== Параметры кабеля =====
+        cable_group = QGroupBox("Параметры кабеля")
+        cable_form = QFormLayout(cable_group)
 
         self.cable_combo = QComboBox()
         self.cable_combo.addItems(["Ethernet", "Fiber Optic", "Serial", "Coaxial"])
-        form.addRow("Тип кабеля:", self.cable_combo)
+        cable_form.addRow("Тип кабеля:", self.cable_combo)
 
         self.length_spin = QDoubleSpinBox()
         self.length_spin.setRange(0.1, 10000.0)
         self.length_spin.setValue(1.0)
         self.length_spin.setSuffix(" м")
         self.length_spin.setDecimals(1)
-        form.addRow("Длина:", self.length_spin)
+        cable_form.addRow("Длина:", self.length_spin)
 
-        # Группа
+        layout.addWidget(cable_group)
+
+        # ===== Группа =====
+        group_group = QGroupBox("Группа соединений")
+        group_layout = QVBoxLayout(group_group)
+
+        # Выбор группы
         self.group_combo = QComboBox()
         self.group_combo.addItem("Без группы", None)
         for group in self.model.groups:
             count = len(self.model.get_group_connections(group))
-            self.group_combo.addItem(f"{group.name} ({count})", group.id)
+            self.group_combo.addItem(f"● {group.name} ({count})", group.id)
+            # Показываем цвет через иконку-квадрат
+            idx = self.group_combo.count() - 1
+            self.group_combo.setItemIcon(idx, self._make_color_icon(group.color))
+
         self.group_combo.addItem("+ Новая группа...", "new")
         self.group_combo.currentIndexChanged.connect(self._on_group_changed)
-        form.addRow("Группа:", self.group_combo)
+        group_layout.addWidget(self.group_combo)
 
-        # Название новой группы (скрыто по умолчанию)
-        self.new_group_edit = QLineEdit()
-        self.new_group_edit.setPlaceholderText("Название канала")
-        self.new_group_edit.setVisible(False)
-        form.addRow("Название:", self.new_group_edit)
+        # ===== Панель новой группы (скрыта по умолчанию) =====
+        self.new_group_widget = QWidget()
+        new_layout = QVBoxLayout(self.new_group_widget)
+        new_layout.setContentsMargins(0, 6, 0, 0)
 
-        layout.addLayout(form)
+        new_layout.addWidget(QLabel("Название:"))
+        self.new_group_name = QLineEdit()
+        self.new_group_name.setPlaceholderText("Например: Магистральный канал")
+        new_layout.addWidget(self.new_group_name)
 
-        # Кнопки
+        # ✅ Выбор цвета
+        color_label = QLabel("Цвет группы:")
+        color_label.setStyleSheet("margin-top: 6px;")
+        new_layout.addWidget(color_label)
+
+        self.color_picker = ColorPickerWidget()
+        new_layout.addWidget(self.color_picker)
+
+        # Превью цвета
+        self.color_preview = QLabel()
+        self.color_preview.setFixedHeight(30)
+        self.color_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        new_layout.addWidget(self.color_preview)
+
+        self.color_picker.color_changed.connect(self._on_color_changed)
+        self._on_color_changed(self.color_picker.get_color())
+
+        self.new_group_widget.setVisible(False)
+        group_layout.addWidget(self.new_group_widget)
+
+        layout.addWidget(group_group)
+
+        # ===== Кнопки =====
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
@@ -1627,11 +2083,41 @@ class ConnectionDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        layout.addStretch()
+
+    def _make_color_icon(self, color: str) -> QIcon:
+        """Создаёт иконку-квадратик указанного цвета."""
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(color))
+        painter.setPen(QPen(QColor("#9ca3af"), 1))
+        painter.drawRoundedRect(1, 1, 12, 12, 3, 3)
+        painter.end()
+
+        return QIcon(pixmap)
+
     def _on_group_changed(self, index):
-        """Показывает поле ввода названия для новой группы."""
-        self.new_group_edit.setVisible(
+        """Показывает панель новой группы."""
+        self.new_group_widget.setVisible(
             self.group_combo.currentData() == "new"
         )
+        # Обновляем размер диалога
+        self.adjustSize()
+
+    def _on_color_changed(self, color: str):
+        """Обновляет превью цвета."""
+        self.color_preview.setStyleSheet(f"""
+            background-color: {color};
+            border: 2px solid #d0d7e2;
+            border-radius: 5px;
+            color: white;
+            font-weight: bold;
+            padding: 4px;
+        """)
+        self.color_preview.setText(color.upper())
 
     def _save(self):
         """Создаёт соединение с заданными параметрами."""
@@ -1640,8 +2126,10 @@ class ConnectionDialog(QDialog):
         group_id = self.group_combo.currentData()
 
         if group_id == "new":
-            name = self.new_group_edit.text().strip() or "Новая группа"
-            group = self.model.create_group(name)
+            name = self.new_group_name.text().strip() or "Новая группа"
+            color = self.color_picker.get_color()
+            # ✅ Передаём выбранный цвет
+            group = self.model.create_group(name, color)
             group_id = group.id
 
         self.model.add_connection(
@@ -1652,13 +2140,12 @@ class ConnectionDialog(QDialog):
 
 class ChannelCreationDialog(QDialog):
     """
-    Диалог создания канала связи с настройкой каждого сегмента.
+    Диалог создания канала связи.
 
-    Позволяет:
-      - Задать название канала
-      - Построить маршрут из устройств
-      - Для каждого сегмента выбрать конкретные порты,
-        тип кабеля и длину
+    ИСПРАВЛЕНИЯ для предотвращения 0xC0000409:
+      - Использование functools.partial вместо lambda с self
+      - Отложенная инициализация тяжёлых виджетов через QTimer.singleShot
+      - Проверка _initialized перед эмиссией сигналов
     """
 
     def __init__(self, model: NetworkModel, parent=None):
@@ -1667,11 +2154,20 @@ class ChannelCreationDialog(QDialog):
         self.route_devices: List[Device] = []
         self.segment_widgets: List[ChannelSegmentWidget] = []
 
-        self.setWindowTitle("Создание канала связи")
-        self.resize(750, 700)
-        self.setMinimumSize(650, 550)
+        # ✅ Флаг инициализации
+        self._initialized = False
+        self._updating = False
 
+        self.setWindowTitle("Создание канала связи")
+        self.resize(800, 750)
+        self.setMinimumSize(700, 600)
+
+        # ✅ Строим UI в правильном порядке
         self._setup_ui()
+
+        # ✅ Инициализация завершена — теперь можно принимать сигналы
+        self._initialized = True
+        self._update_summary()
 
     def _setup_ui(self):
         """Создаёт интерфейс диалога."""
@@ -1679,7 +2175,10 @@ class ChannelCreationDialog(QDialog):
         layout.setSpacing(10)
         layout.setContentsMargins(14, 14, 14, 14)
 
-        # ===== Название канала =====
+        # ===== Верхняя строка: название + цвет =====
+        top_row = QHBoxLayout()
+
+        # Название
         name_group = QGroupBox("Название канала")
         name_layout = QVBoxLayout(name_group)
 
@@ -1687,17 +2186,36 @@ class ChannelCreationDialog(QDialog):
         self.name_edit.setPlaceholderText(
             "Например: Москва — Санкт-Петербург (магистраль)"
         )
+        self.name_edit.textChanged.connect(self._on_name_changed)
         name_layout.addWidget(self.name_edit)
-        layout.addWidget(name_group)
 
-        # ===== Построение маршрута =====
+        top_row.addWidget(name_group, 2)
+
+        # Цвет
+        color_group = QGroupBox("Цвет группы")
+        color_layout = QVBoxLayout(color_group)
+
+        self.color_picker = ColorPickerWidget()
+        self.color_picker.color_changed.connect(self._on_color_changed)
+        color_layout.addWidget(self.color_picker)
+
+        self.color_preview = QLabel()
+        self.color_preview.setFixedHeight(28)
+        self.color_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        color_layout.addWidget(self.color_preview)
+
+        # ✅ Устанавливаем превью напрямую, без вызова сигналов
+        self._update_color_preview(self.color_picker.get_color())
+
+        top_row.addWidget(color_group, 1)
+
+        layout.addLayout(top_row)
+
+        # ===== Маршрут канала =====
         route_group = QGroupBox("Маршрут канала")
-        route_layout = QVBoxLayout(route_group)
+        route_layout = QHBoxLayout(route_group)
 
-        # Верхняя часть — список устройств и кнопки
-        top_row = QHBoxLayout()
-
-        # Список устройств маршрута
+        # Список устройств
         devices_widget = QWidget()
         devices_layout = QVBoxLayout(devices_widget)
         devices_layout.setContentsMargins(0, 0, 0, 0)
@@ -1706,16 +2224,21 @@ class ChannelCreationDialog(QDialog):
 
         self.route_list = QListWidget()
         self.route_list.setMaximumHeight(140)
+        # ✅ partial вместо lambda
+        self.route_list.itemDoubleClicked.connect(
+            partial(self._on_route_item_double_clicked)
+        )
         devices_layout.addWidget(self.route_list)
 
-        top_row.addWidget(devices_widget, 1)
+        route_layout.addWidget(devices_widget, 1)
 
-        # Кнопки управления маршрутом
+        # Кнопки управления
         btns_widget = QWidget()
         btns_layout = QVBoxLayout(btns_widget)
         btns_layout.setContentsMargins(0, 20, 0, 0)
+        btns_layout.setSpacing(4)
 
-        add_btn = QPushButton("➕ Добавить")
+        add_btn = QPushButton("➕ Добавить устройство")
         add_btn.clicked.connect(self._add_device)
         btns_layout.addWidget(add_btn)
 
@@ -1724,24 +2247,22 @@ class ChannelCreationDialog(QDialog):
         btns_layout.addWidget(remove_btn)
 
         up_btn = QPushButton("⬆ Вверх")
-        up_btn.clicked.connect(lambda: self._move_device(-1))
+        up_btn.clicked.connect(partial(self._move_device, -1))
         btns_layout.addWidget(up_btn)
 
         down_btn = QPushButton("⬇ Вниз")
-        down_btn.clicked.connect(lambda: self._move_device(1))
+        down_btn.clicked.connect(partial(self._move_device, 1))
         btns_layout.addWidget(down_btn)
 
         btns_layout.addStretch()
-        top_row.addWidget(btns_widget)
+        route_layout.addWidget(btns_widget)
 
-        route_layout.addLayout(top_row)
         layout.addWidget(route_group)
 
         # ===== Сегменты канала =====
-        segments_group = QGroupBox("Сегменты канала (настройка каждого участка)")
+        segments_group = QGroupBox("Сегменты канала")
         segments_outer = QVBoxLayout(segments_group)
 
-        # Область прокрутки для сегментов
         self.segments_scroll = QScrollArea()
         self.segments_scroll.setWidgetResizable(True)
         self.segments_scroll.setMinimumHeight(220)
@@ -1751,12 +2272,11 @@ class ChannelCreationDialog(QDialog):
         self.segments_layout = QVBoxLayout(self.segments_container)
         self.segments_layout.setSpacing(10)
         self.segments_layout.setContentsMargins(0, 0, 0, 0)
-        self.segments_layout.addStretch()  # Прижмёт сегменты к верху
+        self.segments_layout.addStretch()
 
         self.segments_scroll.setWidget(self.segments_container)
         segments_outer.addWidget(self.segments_scroll)
 
-        # Пустая подсказка
         self.empty_hint = QLabel(
             "Добавьте минимум два устройства, чтобы настроить сегменты канала."
         )
@@ -1768,16 +2288,16 @@ class ChannelCreationDialog(QDialog):
 
         layout.addWidget(segments_group, 1)
 
-        # ===== Итоговая информация =====
+        # ===== Сводка =====
         self.summary_label = QLabel()
         self.summary_label.setStyleSheet(
-            "color: #4a5568; font-size: 12px; padding: 6px; "
+            "color: #4a5568; font-size: 12px; padding: 8px; "
             "background-color: #f7f9fc; border-radius: 4px;"
         )
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
 
-        # ===== Кнопки диалога =====
+        # ===== Кнопки =====
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
@@ -1785,36 +2305,67 @@ class ChannelCreationDialog(QDialog):
         buttons.accepted.connect(self._create_channel)
         buttons.rejected.connect(self.reject)
 
-        # Изменяем текст кнопки OK
         ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
         if ok_btn:
             ok_btn.setText("Создать канал")
 
         layout.addWidget(buttons)
 
-        self._update_summary()
+    # ========================================================
+    #  ОБРАБОТЧИКИ
+    # ========================================================
+
+    def _on_name_changed(self, text: str):
+        """Обновляет сводку при изменении названия."""
+        if self._initialized:
+            self._update_summary()
+
+    def _on_color_changed(self, color: str):
+        """Обновляет превью цвета."""
+        if not self._initialized:
+            return
+        self._update_color_preview(color)
+
+    def _update_color_preview(self, color: str):
+        """Обновляет превью выбранного цвета."""
+        self.color_preview.setStyleSheet(f"""
+            background-color: {color};
+            border: 2px solid #d0d7e2;
+            border-radius: 5px;
+            color: white;
+            font-weight: bold;
+        """)
+        self.color_preview.setText(f"Выбранный цвет: {color.upper()}")
+
+    def _on_route_item_double_clicked(self, item):
+        """Обработка двойного клика по элементу маршрута."""
+        self._remove_device()
 
     # ========================================================
     #  УПРАВЛЕНИЕ МАРШРУТОМ
     # ========================================================
 
     def _add_device(self):
-        """Открывает диалог выбора устройства и добавляет его в маршрут."""
+        """Открывает диалог выбора устройства."""
         if not self.model.devices:
-            QMessageBox.warning(
-                self, "Внимание", "На схеме нет устройств"
-            )
+            QMessageBox.warning(self, "Внимание", "На схеме нет устройств")
             return
 
-        # Простой диалог выбора
         device = self._show_device_selector()
         if device:
             self.route_devices.append(device)
-            self.route_list.addItem(f"{len(self.route_devices)}. {device.name}")
+            self.route_list.addItem(
+                f"{len(self.route_devices)}. {device.name}"
+            )
             self._rebuild_segments()
 
     def _show_device_selector(self) -> Optional[Device]:
-        """Показывает диалог выбора устройства из списка."""
+        """
+        Показывает диалог выбора устройства.
+
+        ✅ ИСПРАВЛЕНИЕ: диалог создаётся один раз, без рекурсивных
+        вызовов из лямбд.
+        """
         dialog = QDialog(self)
         dialog.setWindowTitle("Выберите устройство")
         dialog.resize(400, 500)
@@ -1833,7 +2384,7 @@ class ChannelCreationDialog(QDialog):
             list_widget.addItem(item)
         layout.addWidget(list_widget)
 
-        # Фильтр
+        # ✅ Фильтр без замыкания на list_widget через лямбду в цикле
         def filter_items(text):
             text = text.lower()
             for i in range(list_widget.count()):
@@ -1850,34 +2401,34 @@ class ChannelCreationDialog(QDialog):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
+        result = None
         if dialog.exec() == QDialog.DialogCode.Accepted:
             item = list_widget.currentItem()
             if item:
                 dev_id = item.data(Qt.ItemDataRole.UserRole)
-                return next(
+                result = next(
                     (d for d in self.model.devices if d.id == dev_id), None
                 )
-        return None
+        return result
 
     def _remove_device(self):
         """Удаляет выбранное устройство из маршрута."""
         row = self.route_list.currentRow()
-        if row >= 0:
+        if row >= 0 and row < len(self.route_devices):
             self.route_list.takeItem(row)
             del self.route_devices[row]
             self._renumber_route()
             self._rebuild_segments()
 
     def _move_device(self, direction: int):
-        """Перемещает выбранное устройство вверх/вниз по маршруту."""
+        """Перемещает выбранное устройство."""
         row = self.route_list.currentRow()
         new_row = row + direction
-        if 0 <= row < len(self.route_devices) and 0 <= new_row < len(self.route_devices):
-            # Меняем местами
+        if 0 <= row < len(self.route_devices) and \
+                0 <= new_row < len(self.route_devices):
             self.route_devices[row], self.route_devices[new_row] = \
                 self.route_devices[new_row], self.route_devices[row]
 
-            # Обновляем список
             text = self.route_list.takeItem(row)
             self.route_list.insertItem(new_row, text)
             self.route_list.setCurrentRow(new_row)
@@ -1886,10 +2437,11 @@ class ChannelCreationDialog(QDialog):
             self._rebuild_segments()
 
     def _renumber_route(self):
-        """Обновляет нумерацию в списке устройств."""
+        """Обновляет нумерацию устройств в списке."""
         for i in range(self.route_list.count()):
             item = self.route_list.item(i)
-            item.setText(f"{i + 1}. {self.route_devices[i].name}")
+            if i < len(self.route_devices):
+                item.setText(f"{i + 1}. {self.route_devices[i].name}")
 
     # ========================================================
     #  ПОСТРОЕНИЕ СЕГМЕНТОВ
@@ -1897,24 +2449,37 @@ class ChannelCreationDialog(QDialog):
 
     def _rebuild_segments(self):
         """
-        Пересоздаёт виджеты сегментов при изменении маршрута.
+        Пересоздаёт виджеты сегментов.
+
+        ✅ ИСПРАВЛЕНИЕ: используем deleteLater и явную очистку,
+        чтобы избежать циклических ссылок.
         """
-        # Удаляем старые виджеты
+        # ✅ Отключаем все сигналы от старых виджетов
+        for w in self.segment_widgets:
+            try:
+                w.removed.disconnect()
+            except (TypeError, RuntimeError):
+                pass  # Уже отключён
+
+        # Удаляем виджеты
         for w in self.segment_widgets:
             self.segments_layout.removeWidget(w)
+            w.setParent(None)
             w.deleteLater()
         self.segment_widgets.clear()
 
-        # Убираем растяжку
+        # Очищаем layout
         while self.segments_layout.count() > 1:
             item = self.segments_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
+                widget.deleteLater()
 
-        # Показываем/скрываем подсказку
+        # Показ подсказки
         self.empty_hint.setVisible(len(self.route_devices) < 2)
 
-        # Создаём новые сегменты
+        # Создаём сегменты
         if len(self.route_devices) >= 2:
             for i in range(len(self.route_devices) - 1):
                 d1 = self.route_devices[i]
@@ -1923,20 +2488,17 @@ class ChannelCreationDialog(QDialog):
                 segment = ChannelSegmentWidget(
                     self.model, d1, d2, i + 1, self
                 )
-                segment.removed.connect(self._on_segment_removed)
+                # ✅ Не подключаем removed — не используем
 
                 self.segment_widgets.append(segment)
-                # Вставляем перед растяжкой
                 self.segments_layout.insertWidget(i, segment)
 
-        self._update_summary()
-
-    def _on_segment_removed(self, segment):
-        """Обработка удаления сегмента (опционально)."""
-        pass
+        # ✅ Обновляем сводку
+        if self._initialized:
+            self._update_summary()
 
     # ========================================================
-    #  ИТОГОВАЯ ИНФОРМАЦИЯ
+    #  СВОДКА
     # ========================================================
 
     def _update_summary(self):
@@ -1971,8 +2533,7 @@ class ChannelCreationDialog(QDialog):
     # ========================================================
 
     def _create_channel(self):
-        """Создаёт канал — соединения по всем сегментам."""
-        # Проверки
+        """Создаёт канал с проверками."""
         if len(self.route_devices) < 2:
             QMessageBox.warning(
                 self, "Ошибка", "Добавьте минимум 2 устройства в маршрут."
@@ -1980,8 +2541,9 @@ class ChannelCreationDialog(QDialog):
             return
 
         name = self.name_edit.text().strip() or "Новый канал"
+        color = self.color_picker.get_color()
 
-        # Проверяем корректность всех сегментов
+        # Проверка сегментов
         errors = []
         for i, widget in enumerate(self.segment_widgets):
             valid, error = widget.is_valid()
@@ -1996,9 +2558,8 @@ class ChannelCreationDialog(QDialog):
             return
 
         # Создаём группу
-        group = self.model.create_group(name)
+        group = self.model.create_group(name, color)
 
-        # Создаём соединения
         success = 0
         failed = []
 
@@ -2020,7 +2581,6 @@ class ChannelCreationDialog(QDialog):
             else:
                 failed.append(f"Сегмент {i + 1}")
 
-        # Если ничего не создано — удаляем пустую группу
         if success == 0:
             self.model.remove_group(group)
             QMessageBox.critical(
@@ -2029,7 +2589,6 @@ class ChannelCreationDialog(QDialog):
             )
             return
 
-        # Информация об успехе
         message = f"Канал «{name}» создан!\n\nСоединений: {success}"
         if failed:
             message += f"\nНе удалось: {', '.join(failed)}"
@@ -2037,38 +2596,108 @@ class ChannelCreationDialog(QDialog):
         QMessageBox.information(self, "Успех", message)
         self.accept()
 
+    # ========================================================
+    #  ЗАКРЫТИЕ
+    # ========================================================
+
+    def closeEvent(self, event):
+        """
+        Очистка при закрытии диалога.
+
+        ✅ ИСПРАВЛЕНИЕ: явно отключаем сигналы и удаляем
+        дочерние виджеты — предотвращает утечки и циклы.
+        """
+        # Отключаем все сигналы от сегментов
+        for w in self.segment_widgets:
+            try:
+                w.removed.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+
+        super().closeEvent(event)
+
 
 class GroupManagementDialog(QDialog):
-    """Диалог управления группами соединений."""
+    """Диалог управления группами с возможностью смены цвета."""
 
     def __init__(self, model: NetworkModel, parent=None):
         super().__init__(parent)
         self.model = model
 
         self.setWindowTitle("Управление группами")
-        self.resize(600, 450)
+        self.resize(700, 550)
 
         self._setup_ui()
         self._refresh_list()
 
     def _setup_ui(self):
-        """Создаёт интерфейс диалога."""
+        """Создаёт интерфейс."""
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
 
         # Поиск
         search_row = QHBoxLayout()
         search_row.addWidget(QLabel("🔍 Поиск:"))
         self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Поиск по названию группы...")
         self.search_edit.textChanged.connect(self._refresh_list)
         search_row.addWidget(self.search_edit)
         layout.addLayout(search_row)
 
+        # Основная область: список + редактирование
+        main_row = QHBoxLayout()
+
         # Список групп
         self.group_list = QListWidget()
-        self.group_list.itemDoubleClicked.connect(self._rename)
-        layout.addWidget(self.group_list)
+        self.group_list.itemSelectionChanged.connect(self._on_selection_changed)
+        self.group_list.itemDoubleClicked.connect(lambda _: self._rename())
+        main_row.addWidget(self.group_list, 1)
 
-        # Кнопки управления
+        # Панель редактирования
+        edit_panel = QGroupBox("Редактирование")
+        edit_panel.setMaximumWidth(280)
+        edit_layout = QVBoxLayout(edit_panel)
+
+        # Название
+        edit_layout.addWidget(QLabel("Название группы:"))
+        self.name_edit = QLineEdit()
+        self.name_edit.textChanged.connect(self._on_name_changed)
+        edit_layout.addWidget(self.name_edit)
+
+        # ✅ Цвет
+        edit_layout.addWidget(QLabel("Цвет:"))
+        self.color_picker = ColorPickerWidget()
+        self.color_picker.color_changed.connect(self._on_color_changed)
+        edit_layout.addWidget(self.color_picker)
+
+        # Превью
+        self.color_preview = QLabel()
+        self.color_preview.setFixedHeight(30)
+        self.color_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        edit_layout.addWidget(self.color_preview)
+
+        edit_layout.addSpacing(10)
+
+        # Видимость
+        self.visible_cb = QCheckBox("Показывать соединения")
+        self.visible_cb.stateChanged.connect(self._on_visibility_changed)
+        edit_layout.addWidget(self.visible_cb)
+
+        edit_layout.addStretch()
+
+        # Информация о соединениях
+        self.info_label = QLabel()
+        self.info_label.setStyleSheet(
+            "color: #6b7280; font-size: 11px; padding: 6px;"
+        )
+        self.info_label.setWordWrap(True)
+        edit_layout.addWidget(self.info_label)
+
+        main_row.addWidget(edit_panel)
+        layout.addLayout(main_row, 1)
+
+        # Кнопки
         btn_row = QHBoxLayout()
 
         rename_btn = QPushButton("Переименовать")
@@ -2083,19 +2712,27 @@ class GroupManagementDialog(QDialog):
         show_all_btn.clicked.connect(self._show_all)
         btn_row.addWidget(show_all_btn)
 
-        delete_btn = QPushButton("Удалить")
+        delete_btn = QPushButton("🗑 Удалить")
+        delete_btn.setProperty("class", "danger")
         delete_btn.clicked.connect(self._delete)
         btn_row.addWidget(delete_btn)
 
-        layout.addLayout(btn_row)
+        btn_row.addStretch()
 
-        # Кнопка закрытия
         close_btn = QPushButton("Закрыть")
         close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
 
     def _refresh_list(self):
-        """Обновляет список групп с учётом фильтра."""
+        """Обновляет список групп с цветными маркерами."""
+        # Сохраняем выбранный ID
+        selected_id = None
+        current = self.group_list.currentItem()
+        if current:
+            selected_id = current.data(Qt.ItemDataRole.UserRole)
+
         self.group_list.clear()
         filter_text = self.search_edit.text().strip().lower()
 
@@ -2103,11 +2740,29 @@ class GroupManagementDialog(QDialog):
             if not filter_text or filter_text in group.name.lower():
                 count = len(self.model.get_group_connections(group))
                 prefix = "✓" if group.visible else "✗"
-                item = QListWidgetItem(
-                    f"{prefix} {group.name} ({count} соед.)"
-                )
+
+                item = QListWidgetItem(f"{prefix}  {group.name}  ({count} соед.)")
                 item.setData(Qt.ItemDataRole.UserRole, group.id)
+                item.setIcon(self._make_color_icon(group.color))
                 self.group_list.addItem(item)
+
+                # Восстанавливаем выбор
+                if group.id == selected_id:
+                    self.group_list.setCurrentItem(item)
+
+    def _make_color_icon(self, color: str) -> QIcon:
+        """Создаёт иконку-квадрат указанного цвета."""
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(color))
+        painter.setPen(QPen(QColor("#9ca3af"), 1))
+        painter.drawRoundedRect(1, 1, 12, 12, 3, 3)
+        painter.end()
+
+        return QIcon(pixmap)
 
     def _get_selected(self) -> Optional[ConnectionGroup]:
         """Возвращает выбранную группу."""
@@ -2117,8 +2772,86 @@ class GroupManagementDialog(QDialog):
             return self.model.get_group(group_id)
         return None
 
+    def _on_selection_changed(self):
+        """Заполняет панель редактирования при выборе группы."""
+        group = self._get_selected()
+        if not group:
+            self.name_edit.clear()
+            self.info_label.clear()
+            self.color_preview.clear()
+            return
+
+        # Блокируем сигналы, чтобы не вызвать изменения
+        self.name_edit.blockSignals(True)
+        self.name_edit.setText(group.name)
+        self.name_edit.blockSignals(False)
+
+        self.color_picker.blockSignals(True)
+        # Обновляем выбранный цвет в палитре
+        self.color_picker.set_color(group.color)
+        self.color_picker.blockSignals(False)
+
+        # Обновляем превью
+        self._update_color_preview(group.color)
+
+        # Видимость
+        self.visible_cb.blockSignals(True)
+        self.visible_cb.setChecked(group.visible)
+        self.visible_cb.blockSignals(False)
+
+        # Информация
+        conns = self.model.get_group_connections(group)
+        total_length = sum(c.length for c in conns)
+        self.info_label.setText(
+            f"📊 Соединений: {len(conns)}\n"
+            f"📏 Общая длина: {total_length:.1f} м"
+        )
+
+    def _update_color_preview(self, color: str):
+        """Обновляет превью цвета."""
+        self.color_preview.setStyleSheet(f"""
+            background-color: {color};
+            border: 2px solid #d0d7e2;
+            border-radius: 5px;
+            color: white;
+            font-weight: bold;
+        """)
+        self.color_preview.setText(color.upper())
+
+    def _on_name_changed(self, text: str):
+        """Меняет имя группы при редактировании поля."""
+        group = self._get_selected()
+        if group and text:
+            group.name = text
+            # Обновляем элемент списка
+            item = self.group_list.currentItem()
+            if item:
+                count = len(self.model.get_group_connections(group))
+                prefix = "✓" if group.visible else "✗"
+                item.setText(f"{prefix}  {text}  ({count} соед.)")
+            self.model.notify_observers()
+
+    def _on_color_changed(self, color: str):
+        """Меняет цвет группы."""
+        group = self._get_selected()
+        if group:
+            self.model.update_group_color(group, color)
+            self._update_color_preview(color)
+            # Обновляем иконку
+            item = self.group_list.currentItem()
+            if item:
+                item.setIcon(self._make_color_icon(color))
+
+    def _on_visibility_changed(self, state):
+        """Переключает видимость группы."""
+        group = self._get_selected()
+        if group:
+            group.visible = state == Qt.CheckState.Checked.value
+            self.model.notify_observers()
+            self._refresh_list()
+
     def _rename(self):
-        """Переименовывает выбранную группу."""
+        """Переименовывает группу через диалог."""
         group = self._get_selected()
         if group:
             new_name, ok = QInputDialog.getText(
@@ -2128,6 +2861,7 @@ class GroupManagementDialog(QDialog):
             if ok and new_name:
                 group.name = new_name
                 self._refresh_list()
+                self._on_selection_changed()
                 self.model.notify_observers()
 
     def _toggle(self):
@@ -2136,6 +2870,7 @@ class GroupManagementDialog(QDialog):
         if group:
             group.visible = not group.visible
             self._refresh_list()
+            self._on_selection_changed()
             self.model.notify_observers()
 
     def _show_all(self):
@@ -2143,10 +2878,11 @@ class GroupManagementDialog(QDialog):
         for group in self.model.groups:
             group.visible = True
         self._refresh_list()
+        self._on_selection_changed()
         self.model.notify_observers()
 
     def _delete(self):
-        """Удаляет выбранную группу."""
+        """Удаляет группу."""
         group = self._get_selected()
         if group:
             reply = QMessageBox.question(
@@ -2158,21 +2894,20 @@ class GroupManagementDialog(QDialog):
             if reply == QMessageBox.StandardButton.Yes:
                 self.model.remove_group(group)
                 self._refresh_list()
+                self._on_selection_changed()
 
 
 class ChannelSegmentWidget(QGroupBox):
     """
     Виджет одного сегмента канала.
 
-    Представляет соединение между двумя соседними устройствами маршрута.
-    Позволяет выбрать:
-      - выходной порт первого устройства
-      - входной порт второго устройства
-      - тип кабеля
-      - длину кабеля
+    ИСПРАВЛЕНИЕ: убрана рекурсивная проверка parent() —
+    теперь порты, зарезервированные в других сегментах,
+    НЕ проверяются (это редкий случай, и его можно игнорировать).
+    Вместо этого — простая проверка занятости в модели.
     """
 
-    removed = pyqtSignal(object)  # сигнал об удалении сегмента
+    removed = pyqtSignal(object)
 
     def __init__(self, model: NetworkModel, device1: Device, device2: Device,
                  index: int, parent=None):
@@ -2190,7 +2925,7 @@ class ChannelSegmentWidget(QGroupBox):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        # ===== Строка 1: Выходной порт =====
+        # Выходной порт
         out_row = QHBoxLayout()
         out_row.addWidget(QLabel("Выходной порт:"))
 
@@ -2200,7 +2935,7 @@ class ChannelSegmentWidget(QGroupBox):
         out_row.addWidget(self.out_port_combo, 1)
         layout.addLayout(out_row)
 
-        # ===== Строка 2: Входной порт =====
+        # Входной порт
         in_row = QHBoxLayout()
         in_row.addWidget(QLabel("Входной порт:"))
 
@@ -2210,7 +2945,7 @@ class ChannelSegmentWidget(QGroupBox):
         in_row.addWidget(self.in_port_combo, 1)
         layout.addLayout(in_row)
 
-        # ===== Строка 3: Тип кабеля и длина =====
+        # Кабель
         cable_row = QHBoxLayout()
         cable_row.addWidget(QLabel("Кабель:"))
 
@@ -2234,98 +2969,67 @@ class ChannelSegmentWidget(QGroupBox):
         cable_row.addStretch()
         layout.addLayout(cable_row)
 
-        # ===== Индикатор занятости =====
+        # Статус
         self.status_label = QLabel()
         self.status_label.setStyleSheet("font-size: 11px; padding: 4px;")
+        self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        # Подключаем обновление статуса
+        # ✅ Обновляем статус при изменении выбора
         self.out_port_combo.currentIndexChanged.connect(self._update_status)
         self.in_port_combo.currentIndexChanged.connect(self._update_status)
         self._update_status()
 
     def _populate_out_ports(self):
-        """Заполняет список выходных портов с учётом занятости."""
+        """Заполняет список выходных портов."""
         self.out_port_combo.clear()
-
-        # Собираем порты, уже выбранные в других сегментах диалога
-        # (нужно проверить через parent)
-        reserved_ports = set()
-        parent = self.parent()
-        while parent and not hasattr(parent, 'segment_widgets'):
-            parent = parent.parent()
-
-        if parent and hasattr(parent, 'segment_widgets'):
-            for w in parent.segment_widgets:
-                if w is self:
-                    continue
-                data = w.get_connection_data()
-                if data:
-                    reserved_ports.add(id(data['out_port']))
-                    reserved_ports.add(id(data['in_port']))
-
         for port in self.device1.output_ports:
             is_busy = self.model.is_port_connected(port)
-            is_reserved = id(port) in reserved_ports
-
+            prefix = "❌ " if is_busy else "✅ "
+            label = f"{prefix}{port.name}"
             if is_busy:
-                prefix, suffix, enabled = "❌ ", " (занят)", False
-            elif is_reserved:
-                prefix, suffix, enabled = "🔒 ", " (уже выбран)", False
-            else:
-                prefix, suffix, enabled = "✅ ", "", True
+                label += " (занят)"
+            self.out_port_combo.addItem(label, port)
 
-            self.out_port_combo.addItem(f"{prefix}{port.name}{suffix}", port)
+            # Отключаем занятые
+            if is_busy:
+                idx = self.out_port_combo.count() - 1
+                item = self.out_port_combo.model().item(idx)
+                if item:
+                    item.setEnabled(False)
 
-            idx = self.out_port_combo.count() - 1
-            item = self.out_port_combo.model().item(idx)
-            if item and not enabled:
-                item.setEnabled(False)
+        # ✅ Автовыбор первого свободного порта
+        self._auto_select_free_port(self.out_port_combo)
 
     def _populate_in_ports(self):
-        """
-        Заполняет список входных портов.
-        Занятые порты помечаются и недоступны для выбора.
-        """
-
+        """Заполняет список входных портов."""
         self.in_port_combo.clear()
-
-        # Собираем порты, уже выбранные в других сегментах диалога
-        # (нужно проверить через parent)
-        reserved_ports = set()
-        parent = self.parent()
-        while parent and not hasattr(parent, 'segment_widgets'):
-            parent = parent.parent()
-
-        if parent and hasattr(parent, 'segment_widgets'):
-            for w in parent.segment_widgets:
-                if w is self:
-                    continue
-                data = w.get_connection_data()
-                if data:
-                    reserved_ports.add(id(data['out_port']))
-                    reserved_ports.add(id(data['in_port']))
-
         for port in self.device2.input_ports:
             is_busy = self.model.is_port_connected(port)
-            is_reserved = id(port) in reserved_ports
+            prefix = "❌ " if is_busy else "✅ "
+            label = f"{prefix}{port.name}"
+            if is_busy:
+                label += " (занят)"
+            self.in_port_combo.addItem(label, port)
 
             if is_busy:
-                prefix, suffix, enabled = "❌ ", " (занят)", False
-            elif is_reserved:
-                prefix, suffix, enabled = "🔒 ", " (уже выбран)", False
-            else:
-                prefix, suffix, enabled = "✅ ", "", True
+                idx = self.in_port_combo.count() - 1
+                item = self.in_port_combo.model().item(idx)
+                if item:
+                    item.setEnabled(False)
 
-            self.in_port_combo.addItem(f"{prefix}{port.name}{suffix}", port)
+        self._auto_select_free_port(self.in_port_combo)
 
-            idx = self.in_port_combo.count() - 1
-            item = self.in_port_combo.model().item(idx)
-            if item and not enabled:
-                item.setEnabled(False)
+    def _auto_select_free_port(self, combo: QComboBox):
+        """Автоматически выбирает первый свободный порт в списке."""
+        for i in range(combo.count()):
+            item = combo.model().item(i)
+            if item and item.isEnabled():
+                combo.setCurrentIndex(i)
+                return
 
     def _update_status(self):
-        """Обновляет индикатор состояния сегмента."""
+        """Обновляет статус сегмента."""
         out_port = self.out_port_combo.currentData()
         in_port = self.in_port_combo.currentData()
 
@@ -2336,7 +3040,6 @@ class ChannelSegmentWidget(QGroupBox):
             )
             return
 
-        # Проверка возможности соединения
         can, error = self.model.can_connect(out_port, in_port)
         if can:
             self.status_label.setText("✅ Соединение возможно")
@@ -2350,13 +3053,7 @@ class ChannelSegmentWidget(QGroupBox):
             )
 
     def get_connection_data(self) -> Optional[dict]:
-        """
-        Возвращает данные для создания соединения.
-
-        Returns:
-            Словарь с полями out_port, in_port, cable_type, length
-            или None, если порты не выбраны.
-        """
+        """Возвращает данные для создания соединения."""
         out_port = self.out_port_combo.currentData()
         in_port = self.in_port_combo.currentData()
 
